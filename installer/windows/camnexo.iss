@@ -36,7 +36,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
 Source: "{#Stage}\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
-Source: "{#Stage}\helpers\*"; DestDir: "{app}\helpers"; Flags: ignoreversion
+Source: "{#Stage}\helpers\*"; DestDir: "{app}\helpers"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\CamNexo"; Filename: "{app}\camnexo_desktop.exe"

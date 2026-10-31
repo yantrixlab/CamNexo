@@ -23,6 +23,15 @@ foreach ($f in "camnexo_receiver.exe", "camnexo_vcam.exe", "camnexo_vcam_source.
   Copy-Item "$root\native\windows\vcam\build\Release\$f" "$stage\helpers"
 }
 
+# Background effects: the person-segmentation models and ONNX Runtime (fetched once, checked against a pinned checksum).
+& "$root\native\windows\vcam\fetch-onnxruntime.ps1"
+New-Item -ItemType Directory -Force "$stage\helpers\models" | Out-Null
+Copy-Item "$root\native\windows\vcam\models\*.onnx" "$stage\helpers\models"
+foreach ($f in "onnxruntime.dll", "onnxruntime_providers_shared.dll") {
+  Copy-Item "$root\native\windows\vcam\third_party\onnxruntime\bin\$f" "$stage\helpers"
+}
+Copy-Item "$root\native\windows\vcam\third_party\onnxruntime\LICENSE" "$stage\helpers\LICENSE-onnxruntime.txt"
+
 function Sign-Files([string[]]$files) {
   if (-not $SignArgs) { return }
   $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1

@@ -13,7 +13,7 @@ Early access. What works today:
 | Part | State |
 |---|---|
 | Phone app | Android 7+. Camera, hardware H.264 encoding, front and back camera switching, background streaming, automatic discovery and reconnect |
-| Desktop app | Windows 11. Live preview, resolution and frame controls, virtual camera |
+| Desktop app | Windows 11. Live preview, several phones with layouts, background blur and replacement, colour looks, virtual camera |
 | macOS, Linux, iOS | Planned, not started |
 | Pairing and encryption | Not implemented yet. The stream is not encrypted. Use trusted networks only (see [SECURITY.md](SECURITY.md)) |
 
