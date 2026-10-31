@@ -55,6 +55,16 @@ layout <n> {<src> <x> <y> <w> <h> <cover>} x n
 
 x, y, w and h are fractions of the frame; `cover` 1 fills the cell and crops, 0 fits the whole picture; `src` -1 leaves the cell black. That frame is what the virtual camera shows. With one camera the frame follows the picture size (up to 4K); with several it is 1920x1080. Other commands: `resolution <src> auto|<w> <h>`, `flip <src> <0|1>`, `disconnect <src>`, `simulate <n>` (test cameras).
 
+## Effects
+
+The receiver can blur or replace the background behind a person and apply colour filters to each camera. They run on the computer, on the decoded picture, so every app that uses the virtual camera gets them. The command is:
+
+```
+effect <src> <mode> <blur> <brightness> <contrast> <saturation> <warmth> <background file or ->
+```
+
+`mode` is 0 none, 1 blur the background, 2 replace it with the picture in the file. `blur` is 0 to 100; the four colour values are -100 to 100. The person mask comes from MediaPipe Selfie Segmentation run by ONNX Runtime (`onnxruntime.dll` and `models/` next to the receiver). The receiver prints `[fx] background effects ready` or `[fx] background effects unavailable (reason)` at start; colour filters work either way.
+
 ## Pairing and security
 
 Desktop shows a QR with address, port and one-time key. Noise XX on first pairing, IK on reconnect with stored public keys. Only paired phones may connect; no port is exposed beyond the LAN by default.

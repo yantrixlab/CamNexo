@@ -33,7 +33,9 @@
 #include <thread>
 #include <vector>
 
+#include "effects.h"
 #include "frame_pipe.h"
+#include "picture.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -59,14 +61,6 @@ struct FrameBus {
 
 // ---------- cameras (one per connected phone) and the layout that composes them ----------
 
-// One decoded picture: tightly packed NV12 (all Y rows, then the interleaved UV rows).
-struct Picture {
-    uint32_t w = 0;
-    uint32_t h = 0;
-    uint64_t ts100ns = 0;
-    std::vector<BYTE> nv12;
-};
-
 // Settings the desktop app chose for a phone. They are kept by the phone's address, so a phone
 // that reconnects gets them back.
 struct SourceSettings {
@@ -86,7 +80,36 @@ struct Source {
     std::mutex sockMutex;
     std::mutex picMutex;
     std::shared_ptr<const Picture> latest;
+
+    // Effects (background blur or replacement, filters). The settings come from the desktop app on
+    // another thread; the processor belongs to the thread that decodes this camera.
+    std::mutex fxMutex;
+    std::shared_ptr<const EffectSettings> fxSettings;
+    fx::Processor fxProc;
+    int fxLogCounter = 0;
+    double fxMsSum = 0;
 };
+
+// Runs a freshly decoded picture through the camera's effects (if any) before it is shown.
+std::shared_ptr<const Picture> WithEffects(Source& s, std::shared_ptr<const Picture> pic) {
+    std::shared_ptr<const EffectSettings> st;
+    {
+        std::lock_guard<std::mutex> l(s.fxMutex);
+        st = s.fxSettings;
+    }
+    if (!st || !st->active()) return pic;
+    const int rot = s.rotation.load() + (s.flip.load() ? 180 : 0);
+    auto out = s.fxProc.Process(pic, rot, *st);
+    if (st->mode != 0) {
+        s.fxMsSum += s.fxProc.lastMs;
+        if (++s.fxLogCounter >= 150) {  // about every five seconds: the average time per picture
+            std::printf("[fx] camera %d: %.1f ms per picture\n", s.id, s.fxMsSum / s.fxLogCounter);
+            s.fxLogCounter = 0;
+            s.fxMsSum = 0;
+        }
+    }
+    return out;
+}
 
 std::mutex g_srcMutex;
 std::map<int, std::shared_ptr<Source>> g_sources;
@@ -455,84 +478,6 @@ private:
 
 // ---------- compositor ----------
 
-// Draws one picture into a rectangle of the canvas, upright (rotated clockwise by rot degrees),
-// nearest neighbour. cover = fill the rectangle and crop the overflow around the centre; otherwise
-// the whole picture is fitted inside it with black bars.
-void DrawCell(const Picture& p, int rot, bool cover, BYTE* canvasY, BYTE* canvasUv, int canvasW,
-              int cx, int cy, int cw, int ch) {
-    rot = (((rot % 360) + 360) % 360) / 90 * 90;
-    const bool quarter = rot == 90 || rot == 270;
-    const int dw = static_cast<int>(p.w), dh = static_cast<int>(p.h);
-    const int rw = quarter ? dh : dw;  // size of the upright picture
-    const int rh = quarter ? dw : dh;
-    if (cw < 2 || ch < 2 || rw < 2 || rh < 2) return;
-
-    double s;
-    int fw, fh, ox, oy;
-    double u0 = 0, v0 = 0;  // where the visible part starts inside the upright picture
-    if (!cover) {
-        s = std::min(static_cast<double>(cw) / rw, static_cast<double>(ch) / rh);
-        fw = static_cast<int>(rw * s) & ~1;
-        fh = static_cast<int>(rh * s) & ~1;
-        ox = cx + (((cw - fw) / 2) & ~1);
-        oy = cy + (((ch - fh) / 2) & ~1);
-    } else {
-        s = std::max(static_cast<double>(cw) / rw, static_cast<double>(ch) / rh);
-        fw = cw;
-        fh = ch;
-        ox = cx;
-        oy = cy;
-        u0 = (rw - fw / s) / 2.0;
-        v0 = (rh - fh / s) / 2.0;
-    }
-    if (fw < 2 || fh < 2) return;
-
-    const BYTE* srcY = p.nv12.data();
-    const BYTE* srcUv = srcY + static_cast<size_t>(dw) * dh;
-
-    // Upright, same size and not cropped: plain row copies.
-    if (rot == 0 && fw == dw && fh == dh && u0 < 0.5 && v0 < 0.5) {
-        for (int y = 0; y < fh; ++y) memcpy(canvasY + static_cast<size_t>(oy + y) * canvasW + ox, srcY + static_cast<size_t>(y) * dw, fw);
-        for (int y = 0; y < fh / 2; ++y) memcpy(canvasUv + static_cast<size_t>(oy / 2 + y) * canvasW + ox, srcUv + static_cast<size_t>(y) * dw, fw);
-        return;
-    }
-
-    thread_local std::vector<int> colU, rowV;
-    colU.resize(fw);
-    rowV.resize(fh);
-    for (int i = 0; i < fw; ++i) colU[i] = std::clamp(static_cast<int>(u0 + i / s), 0, rw - 1);
-    for (int j = 0; j < fh; ++j) rowV[j] = std::clamp(static_cast<int>(v0 + j / s), 0, rh - 1);
-
-    // Upright picture coordinate -> coordinate in the picture as it was decoded.
-    auto toSource = [&](int u, int v, int& sx, int& sy) {
-        switch (rot) {
-            case 90:  sx = v;          sy = dh - 1 - u; break;
-            case 180: sx = dw - 1 - u; sy = dh - 1 - v; break;
-            case 270: sx = dw - 1 - v; sy = u;          break;
-            default:  sx = u;          sy = v;          break;
-        }
-    };
-
-    for (int j = 0; j < fh; ++j) {
-        BYTE* out = canvasY + static_cast<size_t>(oy + j) * canvasW + ox;
-        for (int i = 0; i < fw; ++i) {
-            int sx, sy;
-            toSource(colU[i], rowV[j], sx, sy);
-            out[i] = srcY[static_cast<size_t>(sy) * dw + sx];
-        }
-    }
-    for (int j = 0; j < fh / 2; ++j) {
-        BYTE* out = canvasUv + static_cast<size_t>(oy / 2 + j) * canvasW + ox;
-        for (int i = 0; i < fw / 2; ++i) {
-            int sx, sy;
-            toSource(colU[2 * i], rowV[2 * j], sx, sy);
-            const BYTE* px = srcUv + static_cast<size_t>(sy / 2) * dw + (sx / 2) * 2;
-            out[i * 2] = px[0];
-            out[i * 2 + 1] = px[1];
-        }
-    }
-}
-
 // Builds the output frame from the latest picture of every camera in the layout. Returns false
 // when there is nothing to show yet.
 bool ComposeFrame(std::vector<BYTE>& out, int& outW, int& outH) {
@@ -588,7 +533,7 @@ bool ComposeFrame(std::vector<BYTE>& out, int& outW, int& outH) {
         auto px = [](double frac, int total) { return std::clamp(static_cast<int>(frac * total + 0.5), 0, total); };
         int x0 = px(d.cell.x, canvasW) & ~1, y0 = px(d.cell.y, canvasH) & ~1;
         int x1 = px(d.cell.x + d.cell.w, canvasW) & ~1, y1 = px(d.cell.y + d.cell.h, canvasH) & ~1;
-        const int rot = d.src->rotation.load() + (d.src->flip.load() ? 180 : 0);
+        const int rot = d.pic->upright ? 0 : d.src->rotation.load() + (d.src->flip.load() ? 180 : 0);
         DrawCell(*d.pic, rot, d.cell.cover, out.data(), out.data() + ySize, canvasW, x0, y0, x1 - x0, y1 - y0);
     }
     return true;
@@ -726,6 +671,7 @@ void ServeClient(SOCKET c, std::string peer) {
         return;
     }
     dec.onPicture = [src](std::shared_ptr<const Picture> p) {
+        p = WithEffects(*src, std::move(p));
         {
             std::lock_guard<std::mutex> l(src->picMutex);
             src->latest = std::move(p);
@@ -870,7 +816,8 @@ void RunSimulatedSource(std::shared_ptr<Source> src, int number) {
     int frames = 0;
     while (src->alive.load()) {
         const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
-        auto pic = portrait ? MakeTestPicture(540, 960, number, t) : MakeTestPicture(1280, 720, number, t);
+        std::shared_ptr<const Picture> pic = portrait ? MakeTestPicture(540, 960, number, t) : MakeTestPicture(1280, 720, number, t);
+        pic = WithEffects(*src, std::move(pic));
         {
             std::lock_guard<std::mutex> l(src->picMutex);
             src->latest = pic;
@@ -1055,6 +1002,35 @@ void WatchStdin() {
             }
             std::printf("[ctl] layout %zu cells\n", g_cells.size());
             MarkDirty();
+        } else if (cmd == "effect") {
+            // effect <id> <mode> <blur> <brightness> <contrast> <saturation> <warmth> <background file or ->
+            int id = 0;
+            auto st = std::make_shared<EffectSettings>();
+            in >> id >> st->mode >> st->blur >> st->brightness >> st->contrast >> st->saturation >> st->warmth;
+            std::string rest;
+            std::getline(in, rest);
+            while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) rest.erase(rest.begin());
+            while (!rest.empty() && (rest.back() == '\n' || rest.back() == '\r' || rest.back() == ' ')) rest.pop_back();
+            if (rest != "-" && !rest.empty()) {
+                const int n = MultiByteToWideChar(CP_UTF8, 0, rest.c_str(), -1, nullptr, 0);
+                if (n > 1) {
+                    st->background.resize(static_cast<size_t>(n) - 1);
+                    MultiByteToWideChar(CP_UTF8, 0, rest.c_str(), -1, st->background.data(), n);
+                }
+            }
+            auto src = FindSource(id);
+            if (!src) continue;
+            st->mode = std::clamp(st->mode, 0, 2);
+            st->blur = std::clamp(st->blur, 0, 100);
+            st->brightness = std::clamp(st->brightness, -100, 100);
+            st->contrast = std::clamp(st->contrast, -100, 100);
+            st->saturation = std::clamp(st->saturation, -100, 100);
+            st->warmth = std::clamp(st->warmth, -100, 100);
+            {
+                std::lock_guard<std::mutex> l(src->fxMutex);
+                src->fxSettings = st;
+            }
+            std::printf("[ctl] effect %d mode %d\n", id, st->mode);
         } else if (cmd == "simulate") {
             int n = 0;
             in >> n;
@@ -1077,15 +1053,63 @@ void PrintAddresses() {
     freeaddrinfo(res);
 }
 
+// Loads a picture, applies the effects and writes the result as a bitmap (development check).
+int RunFxTest(const std::wstring& in, const std::wstring& out, int mode, const std::wstring& bg) {
+    int w = 0, h = 0;
+    std::vector<BYTE> bgra;
+    if (!fx::LoadImageBgra(in, &w, &h, &bgra)) { std::printf("cannot read %ls\n", in.c_str()); return 2; }
+    auto pic = std::make_shared<Picture>();
+    pic->w = static_cast<uint32_t>(w & ~1);
+    pic->h = static_cast<uint32_t>(h & ~1);
+    pic->nv12.resize(static_cast<size_t>(pic->w) * pic->h * 3 / 2);
+    BYTE* Y = pic->nv12.data();
+    BYTE* UV = Y + static_cast<size_t>(pic->w) * pic->h;
+    for (uint32_t j = 0; j < pic->h; ++j) {
+        for (uint32_t i = 0; i < pic->w; ++i) {
+            const BYTE* p = &bgra[(static_cast<size_t>(j) * w + i) * 4];
+            const int B = p[0], G = p[1], R = p[2];
+            Y[static_cast<size_t>(j) * pic->w + i] = static_cast<BYTE>(((66 * R + 129 * G + 25 * B + 128) >> 8) + 16);
+            if (((i | j) & 1) == 0) {
+                BYTE* o = &UV[static_cast<size_t>(j / 2) * pic->w + i];
+                o[0] = static_cast<BYTE>(((-38 * R - 74 * G + 112 * B + 128) >> 8) + 128);
+                o[1] = static_cast<BYTE>(((112 * R - 94 * G - 18 * B + 128) >> 8) + 128);
+            }
+        }
+    }
+    EffectSettings st;
+    st.mode = mode;
+    st.blur = 70;
+    st.background = bg;
+    if (mode == 3) { st.mode = 0; st.brightness = 10; st.contrast = 15; st.saturation = 25; st.warmth = 20; }
+    fx::Processor proc;
+    std::shared_ptr<const Picture> result;
+    for (int i = 0; i < 6; ++i) {  // a few runs: the first one loads the background and warms up
+        result = proc.Process(pic, 0, st);
+        std::printf("run %d: %.1f ms\n", i, proc.lastMs);
+    }
+    SaveBmp(out.c_str(), result->nv12.data(), static_cast<int>(result->w), static_cast<int>(result->h));
+    std::printf("wrote %ls (%ux%u)\n", out.c_str(), result->w, result->h);
+    return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);  // logs are read from a redirected file while running
     int simulate = 0;
+    std::wstring fxTestIn, fxTestOut, fxTestBg;
+    int fxTestMode = 0;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::wstring(argv[i]) == L"--snap") g_snapPath = argv[i + 1];
         if (std::wstring(argv[i]) == L"--simulate") simulate = _wtoi(argv[i + 1]);
         if (std::wstring(argv[i]) == L"--port") kPort = static_cast<unsigned short>(_wtoi(argv[i + 1]));
+        // --fx-test in.png out.bmp <0 none|1 blur|2 replace> [background.png]: run the effects on one picture
+        if (std::wstring(argv[i]) == L"--fx-test" && i + 3 < argc) {
+            fxTestIn = argv[i + 1];
+            fxTestOut = argv[i + 2];
+            fxTestMode = _wtoi(argv[i + 3]);
+            if (i + 4 < argc) fxTestBg = argv[i + 4];
+        }
     }
     for (int i = 1; i < argc; ++i) {
         if (std::wstring(argv[i]) == L"--no-discovery") g_noDiscovery = true;
@@ -1094,6 +1118,18 @@ int wmain(int argc, wchar_t** argv) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
+
+    // Background effects: the model and onnxruntime.dll live next to this program.
+    {
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        std::wstring dir(path);
+        dir = dir.substr(0, dir.find_last_of(L'\\'));
+        std::string why;
+        if (fx::Init(dir, &why)) std::printf("[fx] background effects ready\n");
+        else std::printf("[fx] background effects unavailable (%s)\n", why.c_str());
+    }
+    if (!fxTestIn.empty()) return RunFxTest(fxTestIn, fxTestOut, fxTestMode, fxTestBg);
 
     std::thread(PipeServer).detach();
     std::thread(PreviewPipeServer).detach();
