@@ -18,11 +18,10 @@ add_executable(camnexo_receiver src/receiver_main.cpp src/draw.cpp src/effects.c
 target_include_directories(camnexo_receiver PRIVATE third_party/onnxruntime/include)
 target_link_libraries(camnexo_receiver PRIVATE ws2_32 mfplat mf mfuuid wmcodecdspuuid strmiids ole32 advapi32 dnsapi windowscodecs)
 
-# Next to the receiver: the person-segmentation model, and onnxruntime.dll when fetch-onnxruntime.ps1 has run.
+# Next to the receiver: the person-matting model, and onnxruntime.dll when fetch-onnxruntime.ps1 has run.
 add_custom_command(TARGET camnexo_receiver POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:camnexo_receiver>/models"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/selfie_segmentation.onnx" "$<TARGET_FILE_DIR:camnexo_receiver>/models/"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/selfie_segmentation_landscape.onnx" "$<TARGET_FILE_DIR:camnexo_receiver>/models/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/models/modnet.onnx" "$<TARGET_FILE_DIR:camnexo_receiver>/models/"
     COMMAND ${CMAKE_COMMAND} -DSRC="${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/bin" -DDST="$<TARGET_FILE_DIR:camnexo_receiver>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_onnxruntime.cmake")
 

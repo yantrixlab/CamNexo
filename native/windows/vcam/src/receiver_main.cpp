@@ -103,7 +103,7 @@ std::shared_ptr<const Picture> WithEffects(Source& s, std::shared_ptr<const Pict
     if (st->mode != 0) {
         s.fxMsSum += s.fxProc.lastMs;
         if (++s.fxLogCounter >= 150) {  // about every five seconds: the average time per picture
-            std::printf("[fx] camera %d: %.1f ms per picture\n", s.id, s.fxMsSum / s.fxLogCounter);
+            std::printf("[fx] camera %d: %.1f ms per picture, %.1f ms per matte\n", s.id, s.fxMsSum / s.fxLogCounter, s.fxProc.modelMs.load());
             s.fxLogCounter = 0;
             s.fxMsSum = 0;
         }
@@ -150,7 +150,8 @@ std::shared_ptr<Source> FindSource(int id) {
 std::wstring g_snapPath;
 
 void SaveBmp(const wchar_t* path, const BYTE* nv12, int w, int h) {
-    std::vector<BYTE> rgb(static_cast<size_t>(w) * h * 3);
+    const size_t stride = (static_cast<size_t>(w) * 3 + 3) & ~static_cast<size_t>(3);  // rows are padded to 4 bytes
+    std::vector<BYTE> rgb(stride * h);
     const BYTE* uv = nv12 + static_cast<size_t>(w) * h;
     auto clamp = [](int v) { return static_cast<BYTE>(v < 0 ? 0 : v > 255 ? 255 : v); };
     for (int y = 0; y < h; ++y) {
@@ -159,7 +160,7 @@ void SaveBmp(const wchar_t* path, const BYTE* nv12, int w, int h) {
             const int U = uv[(y / 2) * w + (x / 2) * 2] - 128;
             const int V = uv[(y / 2) * w + (x / 2) * 2 + 1] - 128;
             const int c = 298 * Y;
-            BYTE* p = &rgb[(static_cast<size_t>(h - 1 - y) * w + x) * 3];
+            BYTE* p = &rgb[static_cast<size_t>(h - 1 - y) * stride + static_cast<size_t>(x) * 3];
             p[0] = clamp((c + 516 * U + 128) >> 8);
             p[1] = clamp((c - 100 * U - 208 * V + 128) >> 8);
             p[2] = clamp((c + 409 * V + 128) >> 8);
@@ -941,7 +942,9 @@ void WatchStdin() {
         if (cmd == "quit") {
             std::printf("[mdns] withdrawing announcement\n");
             StopMdns();
-            std::exit(0);
+            // Leave at once: running global clean-up while the matte threads and ONNX Runtime are alive can hang.
+            std::fflush(stdout);
+            TerminateProcess(GetCurrentProcess(), 0);
         } else if (cmd == "resolution") {
             int id = 0;
             std::string a;

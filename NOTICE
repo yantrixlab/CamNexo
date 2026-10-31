@@ -9,5 +9,5 @@ the platform libraries (CameraX, MediaCodec, Windows Media Foundation).
 
 Background effects use:
 - ONNX Runtime (Microsoft), MIT License, https://github.com/microsoft/onnxruntime
-- MediaPipe Selfie Segmentation models (Google), Apache License 2.0, as ONNX conversions published by
-  onnx-community on Hugging Face. See native/windows/vcam/models/README.md.
+- MODNet portrait matting model (Zhanghan Ke et al.), Apache License 2.0, https://github.com/ZHKKKe/MODNet, as the ONNX
+  conversion published by Xenova on Hugging Face. See native/windows/vcam/models/README.md.

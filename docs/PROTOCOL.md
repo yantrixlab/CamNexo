@@ -63,7 +63,7 @@ The receiver can blur or replace the background behind a person and apply colour
 effect <src> <mode> <blur> <brightness> <contrast> <saturation> <warmth> <background file or ->
 ```
 
-`mode` is 0 none, 1 blur the background, 2 replace it with the picture in the file. `blur` is 0 to 100; the four colour values are -100 to 100. The person mask comes from MediaPipe Selfie Segmentation run by ONNX Runtime (`onnxruntime.dll` and `models/` next to the receiver). The receiver prints `[fx] background effects ready` or `[fx] background effects unavailable (reason)` at start; colour filters work either way.
+`mode` is 0 none, 1 blur the background, 2 replace it with the picture in the file. `blur` is 0 to 100; the four colour values are -100 to 100. The person matte comes from the MODNet model run by ONNX Runtime (`onnxruntime.dll` and `models/modnet.onnx` next to the receiver), on a helper thread per camera. The receiver prints `[fx] background effects ready` or `[fx] background effects unavailable (reason)` at start; colour filters work either way.
 
 ## Pairing and security
 
