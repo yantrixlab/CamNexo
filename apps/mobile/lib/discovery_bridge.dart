@@ -9,8 +9,14 @@ class DiscoveredPc {
   final String host;
   final int port;
 
+  /// The announced name without the " (2)" style suffix Windows adds when an older announcement
+  /// of the same name is still around on the network.
+  static String baseOf(String name) => name.replaceFirst(RegExp(r'\s*\(\d+\)$'), '');
+
+  String get baseName => baseOf(name);
+
   /// Name without the "CamNexo-" prefix, for showing to people.
-  String get displayName => name.startsWith('CamNexo-') ? name.substring(8) : name;
+  String get displayName => baseName.startsWith('CamNexo-') ? baseName.substring(8) : baseName;
 }
 
 /// found | lost | error

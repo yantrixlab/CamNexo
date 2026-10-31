@@ -58,6 +58,25 @@ void main() {
     expect(find.text('Connect'), findsOneWidget);
   });
 
+  testWidgets('lists one computer once when old announcements of it linger', (tester) async {
+    await tester.pumpWidget(const CamNexoApp());
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    for (final name in ['CamNexo-Satellite', 'CamNexo-Satellite (1)', 'CamNexo-Satellite(2)']) {
+      await messenger.handlePlatformMessage(
+        'camnexo/discovery/events',
+        const StandardMethodCodec().encodeSuccessEnvelope(
+            {'type': 'found', 'name': name, 'host': '192.168.31.224', 'port': 7878}),
+        (_) {},
+      );
+    }
+    await tester.pump();
+
+    expect(find.text('Satellite'), findsOneWidget);
+    expect(find.text('Satellite (1)'), findsNothing);
+    expect(find.text('Satellite(2)'), findsNothing);
+  });
+
   // Sends a status event from the (mocked) native module to the screen.
   Future<void> emitStatus(Map<String, Object?> event) async {
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;

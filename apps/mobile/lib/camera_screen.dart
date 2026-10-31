@@ -84,17 +84,19 @@ class _CameraScreenState extends State<CameraScreen>
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getString(_hostPref);
       if (saved != null && _host.text.isEmpty && mounted) _host.text = saved;
-      _rememberedPc = prefs.getString(_pcPref);
+      final savedPc = prefs.getString(_pcPref);
+      _rememberedPc = savedPc == null ? null : DiscoveredPc.baseOf(savedPc);
     } catch (_) {
       // Remembering is a convenience; everything still works without it.
     }
   }
 
   Future<void> _rememberPc(String name) async {
-    _rememberedPc = name;
+    final base = DiscoveredPc.baseOf(name);
+    _rememberedPc = base;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_pcPref, name);
+      await prefs.setString(_pcPref, base);
     } catch (_) {}
   }
 
@@ -112,7 +114,7 @@ class _CameraScreenState extends State<CameraScreen>
 
   /// Connects by itself to the computer used last time, as soon as it shows up.
   void _maybeAutoConnect(DiscoveredPc pc) {
-    if (_busy || _autoPaused || pc.name != _rememberedPc) return;
+    if (_busy || _autoPaused || pc.baseName != _rememberedPc) return;
     _connectTo(pc.host, pc.port, pcName: pc.name);
   }
 
@@ -265,7 +267,7 @@ class _CameraScreenState extends State<CameraScreen>
     _autoRetries++;
     _retryTimer?.cancel();
     _retryTimer = Timer(const Duration(seconds: 3), () {
-      final pc = _pcs[name];
+      final pc = _pcs.values.where((p) => p.baseName == name).lastOrNull;
       if (!mounted || _busy || _autoPaused || pc == null) return;
       _connectTo(pc.host, pc.port, pcName: pc.name);
     });
@@ -997,7 +999,12 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   Widget _nearby(BuildContext context) {
-    final pcs = _pcs.values.toList()
+    // One row per machine: leftover announcements of the same computer share its address.
+    final byAddress = <String, DiscoveredPc>{};
+    for (final pc in _pcs.values) {
+      byAddress['${pc.host}:${pc.port}'] = pc;
+    }
+    final pcs = byAddress.values.toList()
       ..sort((a, b) => a.displayName.compareTo(b.displayName));
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1093,7 +1100,7 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   Widget _pcTile(DiscoveredPc pc) {
-    final remembered = pc.name == _rememberedPc;
+    final remembered = pc.baseName == _rememberedPc;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
