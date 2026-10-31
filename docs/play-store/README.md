@@ -1,6 +1,6 @@
 # Publishing CamNexo on Google Play
 
-Everything to copy into Play Console. The signed bundle is `release/CamNexo-1.0.0+1-release.aab`
+Everything to copy into Play Console. The signed bundle is `release/CamNexo-1.0.0+2-release.aab`
 (package `com.camnexo.webcam`, signed with the `upload` key). Rebuild it with
 `cd apps/mobile && flutter build appbundle --release`; raise the build number in `apps/mobile/pubspec.yaml`
 (`version: 1.0.0+N`) for every new upload, because Play rejects a build number it has already seen.
@@ -106,7 +106,7 @@ wording of each question against what the form says on the day):
 
 ## 5. Release
 
-1. Testing, Closed testing (or Internal testing first, to try the install quickly): create a release, upload `release/CamNexo-1.0.0+1-release.aab`.
+1. Testing, Closed testing (or Internal testing first, to try the install quickly): create a release, upload `release/CamNexo-1.0.0+2-release.aab`.
 2. **Play App Signing**: accept it when asked. Google keeps the app signing key; your `upload` key only proves the upload is yours.
 3. Release notes (500 characters or less):
 
