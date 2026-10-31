@@ -21,9 +21,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,7 +39,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-constexpr unsigned short kPort = 7878;
+unsigned short kPort = 7878;  // --port N changes it (development)
+bool g_noDiscovery = false;  // --no-discovery: do not announce on the network
 constexpr size_t kHeaderLen = 28;
 constexpr uint32_t kMaxPayload = 16 * 1024 * 1024;
 constexpr uint8_t kFlagConfig = 1;
@@ -51,10 +57,70 @@ struct FrameBus {
     uint64_t ts100ns = 0;
 } g_bus;
 
-// How the output frame is composed, set from the desktop window (see H264Decoder::ScaleNv12):
-// 0 = Auto (fit), 1 = Landscape frame, 2 = Portrait frame; flip turns the picture 180 degrees.
-std::atomic<int> g_layoutMode{0};
-std::atomic<int> g_layoutFlip{0};
+// ---------- cameras (one per connected phone) and the layout that composes them ----------
+
+// One decoded picture: tightly packed NV12 (all Y rows, then the interleaved UV rows).
+struct Picture {
+    uint32_t w = 0;
+    uint32_t h = 0;
+    uint64_t ts100ns = 0;
+    std::vector<BYTE> nv12;
+};
+
+// Settings the desktop app chose for a phone. They are kept by the phone's address, so a phone
+// that reconnects gets them back.
+struct SourceSettings {
+    int resW = 0;  // 0 = Auto
+    int resH = 0;
+    bool flip = false;
+};
+
+struct Source {
+    int id = 0;
+    std::string peer;
+    bool simulated = false;
+    std::atomic<int> rotation{0};  // clockwise degrees to make the picture upright, from the packets
+    std::atomic<bool> flip{false}; // an extra half turn, for a phone mounted upside down
+    std::atomic<bool> alive{true};
+    SOCKET sock = INVALID_SOCKET;
+    std::mutex sockMutex;
+    std::mutex picMutex;
+    std::shared_ptr<const Picture> latest;
+};
+
+std::mutex g_srcMutex;
+std::map<int, std::shared_ptr<Source>> g_sources;
+std::map<std::string, SourceSettings> g_settings;
+int g_nextSourceId = 1;
+constexpr size_t kMaxSources = 8;
+
+// A cell of the layout: where one camera is drawn on the canvas. x, y, w, h are fractions of the
+// canvas (0..1). cover = fill the cell and crop the overflow; otherwise fit the whole picture.
+struct Cell {
+    int src = -1;
+    double x = 0, y = 0, w = 1, h = 1;
+    bool cover = false;
+};
+
+std::mutex g_layoutMutex;
+std::vector<Cell> g_cells;
+bool g_layoutSet = false;  // false: show the first camera, fitted, until the window sends a layout
+
+// Wakes the compositor when a camera delivers a picture or the layout changes.
+std::mutex g_composeMutex;
+std::condition_variable g_composeCv;
+std::atomic<bool> g_dirty{false};
+
+void MarkDirty() {
+    g_dirty = true;
+    g_composeCv.notify_all();
+}
+
+std::shared_ptr<Source> FindSource(int id) {
+    std::lock_guard<std::mutex> l(g_srcMutex);
+    auto it = g_sources.find(id);
+    return it == g_sources.end() ? nullptr : it->second;
+}
 
 // Optional debugging aid: `camnexo_receiver --snap frame.bmp` rewrites the file with the latest
 // frame about every 2 seconds, so the picture can be checked without a video app.
@@ -151,7 +217,7 @@ void PipeClient(HANDLE pipe) {
     std::printf("[pipe] virtual camera disconnected\n");
 }
 
-// Small RGBA frames for the desktop window's preview (about 15 per second, always 640x360).
+// Small RGBA frames for the desktop window's preview (about 15 per second, always the preview size).
 void PreviewClient(HANDLE pipe) {
     uint64_t last = 0;
     std::vector<BYTE> local, rgba(static_cast<size_t>(kPreviewWidth) * kPreviewHeight * 4);
@@ -220,7 +286,7 @@ void ServePipe(const wchar_t* name, void (*client)(HANDLE), DWORD outBuffer) {
 }
 
 void PipeServer() { ServePipe(CAMNEXO_FRAME_PIPE, PipeClient, 16 * 1024 * 1024); }
-void PreviewPipeServer() { ServePipe(CAMNEXO_PREVIEW_PIPE, PreviewClient, 2 * 1024 * 1024); }
+void PreviewPipeServer() { ServePipe(CAMNEXO_PREVIEW_PIPE, PreviewClient, 4 * 1024 * 1024); }
 
 // ---------- H.264 decoding ----------
 
@@ -278,7 +344,7 @@ public:
 
     uint64_t decoded = 0;
     uint64_t errors = 0;
-    int rotation = 0;  // clockwise degrees to make the picture upright, from the packet header
+    std::function<void(std::shared_ptr<const Picture>)> onPicture;  // every decoded picture
 
 private:
     bool SelectNv12Output() {
@@ -345,6 +411,8 @@ private:
         }
     }
 
+    // Copies the visible part of the decoded picture into a tightly packed NV12 Picture and hands it
+    // to the owner. Placing it on the canvas (rotation, fit or crop) is the compositor's job.
     void Emit(IMFSample* sample) {
         ComPtr<IMFMediaBuffer> buf;
         if (FAILED(sample->ConvertToContiguousBuffer(&buf))) return;
@@ -362,120 +430,189 @@ private:
         }
         LONGLONG ts = 0;
         sample->GetSampleTime(&ts);
-        if (ScaleNv12(scan, pitch)) Publish(_out.data(), _outW, _outH, static_cast<uint64_t>(ts));
+        if (_dispW >= 2 && _dispH >= 2 && pitch > 0 && onPicture) {
+            auto pic = std::make_shared<Picture>();
+            pic->w = _dispW & ~1u;
+            pic->h = _dispH & ~1u;
+            pic->ts100ns = static_cast<uint64_t>(ts);
+            pic->nv12.resize(static_cast<size_t>(pic->w) * pic->h * 3 / 2);
+            BYTE* dst = pic->nv12.data();
+            for (uint32_t y = 0; y < pic->h; ++y) memcpy(dst + static_cast<size_t>(y) * pic->w, scan + static_cast<size_t>(y) * pitch, pic->w);
+            const BYTE* srcUv = scan + static_cast<size_t>(pitch) * _codedH;
+            BYTE* dstUv = dst + static_cast<size_t>(pic->w) * pic->h;
+            for (uint32_t y = 0; y < pic->h / 2; ++y) memcpy(dstUv + static_cast<size_t>(y) * pic->w, srcUv + static_cast<size_t>(y) * pitch, pic->w);
+            onPicture(std::move(pic));
+        }
         ++decoded;
         if (is2d) b2->Unlock2D();
         else buf->Unlock();
     }
 
-    // Composes the output frame: crop to the display aperture, rotate clockwise so the picture is
-    // upright (the phone works this out from its own gravity sensor), then place it in a 16:9
-    // canvas (nearest neighbour) according to the layout chosen in the desktop window:
-    //   Auto       fit the whole picture inside the canvas, black bars where it does not fill; the
-    //              frame's shape follows how the phone is held.
-    //   Landscape  the frame is always the full wide canvas. The picture is scaled to fill it and
-    //              whatever overflows is cropped, so an upright phone shows a cropped strip.
-    //   Portrait   the frame is always a narrow upright band in the middle of the canvas, filled
-    //              the same way. Turning the phone never changes the frame in these two modes.
-    // The canvas follows the decoded size: its height is the shorter side of the picture (so
-    // 1920x1080 gives a 1920x1080 canvas). Returns false when there is nothing to publish; the
-    // canvas size is left in _outW/_outH.
-    bool ScaleNv12(const BYTE* src, LONG pitch) {
-        if (_dispW == 0 || _dispH == 0) return false;
-        _outH = std::min<UINT32>(kMaxFrameHeight, std::min(_dispW, _dispH)) & ~1u;
-        _outW = std::min<UINT32>(kMaxFrameWidth, _outH * 16 / 9) & ~1u;
-        const int outW = static_cast<int>(_outW), outH = static_cast<int>(_outH);
-        if (_out.size() != static_cast<size_t>(outW) * outH * 3 / 2) _out.resize(static_cast<size_t>(outW) * outH * 3 / 2);
-
-        // Flip turns the picture another half turn (for a phone mounted upside down).
-        const int rot = (((rotation + (g_layoutFlip.load() ? 180 : 0)) % 360) + 360) % 360 / 90 * 90;
-        const bool quarter = rot == 90 || rot == 270;
-        const int rw = static_cast<int>(quarter ? _dispH : _dispW);  // size of the rotated picture
-        const int rh = static_cast<int>(quarter ? _dispW : _dispH);
-
-        const int layout = g_layoutMode.load();  // 0 auto, 1 landscape, 2 portrait
-        double s;
-        int fw, fh, ox, oy;
-        double u0 = 0, v0 = 0;  // where the visible part starts inside the rotated picture
-        if (layout == 0) {
-            s = std::min(static_cast<double>(outW) / rw, static_cast<double>(outH) / rh);
-            fw = static_cast<int>(rw * s) & ~1;
-            fh = static_cast<int>(rh * s) & ~1;
-            ox = ((outW - fw) / 2) & ~1;
-            oy = ((outH - fh) / 2) & ~1;
-        } else {
-            // Landscape fills the whole canvas; portrait fills a 9:16 band in the middle.
-            const int tw = layout == 2 ? ((outH * 9 / 16) & ~1) : outW;
-            const int th = outH;
-            s = std::max(static_cast<double>(tw) / rw, static_cast<double>(th) / rh);
-            fw = tw;
-            fh = th;
-            ox = ((outW - tw) / 2) & ~1;
-            oy = 0;
-            u0 = (rw - fw / s) / 2.0;  // centre crop
-            v0 = (rh - fh / s) / 2.0;
-        }
-        if (fw <= 0 || fh <= 0) return false;
-
-        BYTE* dstY = _out.data();
-        BYTE* dstUv = _out.data() + static_cast<size_t>(outW) * outH;
-
-        // Fast path: upright and already the canvas size (typical for landscape): plain row copies.
-        if (rot == 0 && fw == outW && fh == outH && static_cast<int>(_dispW) == outW && static_cast<int>(_dispH) == outH) {
-            const BYTE* srcUv0 = src + static_cast<size_t>(pitch) * _codedH;
-            for (int y = 0; y < outH; ++y) memcpy(dstY + static_cast<size_t>(y) * outW, src + static_cast<size_t>(y) * pitch, outW);
-            for (int y = 0; y < outH / 2; ++y) memcpy(dstUv + static_cast<size_t>(y) * outW, srcUv0 + static_cast<size_t>(y) * pitch, outW);
-            return true;
-        }
-
-        memset(dstY, 16, static_cast<size_t>(outW) * outH);       // black bars
-        memset(dstUv, 128, static_cast<size_t>(outW) * outH / 2);
-
-        // Output column/row -> coordinate in the rotated picture.
-        _colU.resize(fw);
-        _rowV.resize(fh);
-        for (int i = 0; i < fw; ++i) _colU[i] = std::clamp(static_cast<int>(u0 + i / s), 0, rw - 1);
-        for (int j = 0; j < fh; ++j) _rowV[j] = std::clamp(static_cast<int>(v0 + j / s), 0, rh - 1);
-
-        const int dw = static_cast<int>(_dispW), dh = static_cast<int>(_dispH);
-        auto toSource = [&](int u, int v, int& sx, int& sy) {
-            switch (rot) {
-                case 90:  sx = v;          sy = dh - 1 - u; break;
-                case 180: sx = dw - 1 - u; sy = dh - 1 - v; break;
-                case 270: sx = dw - 1 - v; sy = u;          break;
-                default:  sx = u;          sy = v;          break;
-            }
-        };
-
-        const BYTE* srcUv = src + static_cast<size_t>(pitch) * _codedH;
-        for (int j = 0; j < fh; ++j) {
-            BYTE* out = dstY + static_cast<size_t>(oy + j) * outW + ox;
-            for (int i = 0; i < fw; ++i) {
-                int sx, sy;
-                toSource(_colU[i], _rowV[j], sx, sy);
-                out[i] = src[static_cast<size_t>(sy) * pitch + sx];
-            }
-        }
-        for (int j = 0; j < fh / 2; ++j) {
-            BYTE* out = dstUv + static_cast<size_t>(oy / 2 + j) * outW + ox;
-            for (int i = 0; i < fw / 2; ++i) {
-                int sx, sy;
-                toSource(_colU[2 * i], _rowV[2 * j], sx, sy);
-                const BYTE* px = srcUv + static_cast<size_t>(sy / 2) * pitch + (sx / 2) * 2;
-                out[i * 2] = px[0];
-                out[i * 2 + 1] = px[1];
-            }
-        }
-        return true;
-    }
-
     ComPtr<IMFTransform> _dec;
-    std::vector<int> _colU, _rowV;
-    std::vector<BYTE> _out;
-    UINT32 _outW = 0, _outH = 0;
     UINT32 _codedH = 0, _dispW = 0, _dispH = 0;
     LONG _stride = 0;
 };
+
+// ---------- compositor ----------
+
+// Draws one picture into a rectangle of the canvas, upright (rotated clockwise by rot degrees),
+// nearest neighbour. cover = fill the rectangle and crop the overflow around the centre; otherwise
+// the whole picture is fitted inside it with black bars.
+void DrawCell(const Picture& p, int rot, bool cover, BYTE* canvasY, BYTE* canvasUv, int canvasW,
+              int cx, int cy, int cw, int ch) {
+    rot = (((rot % 360) + 360) % 360) / 90 * 90;
+    const bool quarter = rot == 90 || rot == 270;
+    const int dw = static_cast<int>(p.w), dh = static_cast<int>(p.h);
+    const int rw = quarter ? dh : dw;  // size of the upright picture
+    const int rh = quarter ? dw : dh;
+    if (cw < 2 || ch < 2 || rw < 2 || rh < 2) return;
+
+    double s;
+    int fw, fh, ox, oy;
+    double u0 = 0, v0 = 0;  // where the visible part starts inside the upright picture
+    if (!cover) {
+        s = std::min(static_cast<double>(cw) / rw, static_cast<double>(ch) / rh);
+        fw = static_cast<int>(rw * s) & ~1;
+        fh = static_cast<int>(rh * s) & ~1;
+        ox = cx + (((cw - fw) / 2) & ~1);
+        oy = cy + (((ch - fh) / 2) & ~1);
+    } else {
+        s = std::max(static_cast<double>(cw) / rw, static_cast<double>(ch) / rh);
+        fw = cw;
+        fh = ch;
+        ox = cx;
+        oy = cy;
+        u0 = (rw - fw / s) / 2.0;
+        v0 = (rh - fh / s) / 2.0;
+    }
+    if (fw < 2 || fh < 2) return;
+
+    const BYTE* srcY = p.nv12.data();
+    const BYTE* srcUv = srcY + static_cast<size_t>(dw) * dh;
+
+    // Upright, same size and not cropped: plain row copies.
+    if (rot == 0 && fw == dw && fh == dh && u0 < 0.5 && v0 < 0.5) {
+        for (int y = 0; y < fh; ++y) memcpy(canvasY + static_cast<size_t>(oy + y) * canvasW + ox, srcY + static_cast<size_t>(y) * dw, fw);
+        for (int y = 0; y < fh / 2; ++y) memcpy(canvasUv + static_cast<size_t>(oy / 2 + y) * canvasW + ox, srcUv + static_cast<size_t>(y) * dw, fw);
+        return;
+    }
+
+    thread_local std::vector<int> colU, rowV;
+    colU.resize(fw);
+    rowV.resize(fh);
+    for (int i = 0; i < fw; ++i) colU[i] = std::clamp(static_cast<int>(u0 + i / s), 0, rw - 1);
+    for (int j = 0; j < fh; ++j) rowV[j] = std::clamp(static_cast<int>(v0 + j / s), 0, rh - 1);
+
+    // Upright picture coordinate -> coordinate in the picture as it was decoded.
+    auto toSource = [&](int u, int v, int& sx, int& sy) {
+        switch (rot) {
+            case 90:  sx = v;          sy = dh - 1 - u; break;
+            case 180: sx = dw - 1 - u; sy = dh - 1 - v; break;
+            case 270: sx = dw - 1 - v; sy = u;          break;
+            default:  sx = u;          sy = v;          break;
+        }
+    };
+
+    for (int j = 0; j < fh; ++j) {
+        BYTE* out = canvasY + static_cast<size_t>(oy + j) * canvasW + ox;
+        for (int i = 0; i < fw; ++i) {
+            int sx, sy;
+            toSource(colU[i], rowV[j], sx, sy);
+            out[i] = srcY[static_cast<size_t>(sy) * dw + sx];
+        }
+    }
+    for (int j = 0; j < fh / 2; ++j) {
+        BYTE* out = canvasUv + static_cast<size_t>(oy / 2 + j) * canvasW + ox;
+        for (int i = 0; i < fw / 2; ++i) {
+            int sx, sy;
+            toSource(colU[2 * i], rowV[2 * j], sx, sy);
+            const BYTE* px = srcUv + static_cast<size_t>(sy / 2) * dw + (sx / 2) * 2;
+            out[i * 2] = px[0];
+            out[i * 2 + 1] = px[1];
+        }
+    }
+}
+
+// Builds the output frame from the latest picture of every camera in the layout. Returns false
+// when there is nothing to show yet.
+bool ComposeFrame(std::vector<BYTE>& out, int& outW, int& outH) {
+    std::vector<Cell> cells;
+    bool layoutSet;
+    {
+        std::lock_guard<std::mutex> l(g_layoutMutex);
+        cells = g_cells;
+        layoutSet = g_layoutSet;
+    }
+
+    struct Drawable {
+        Cell cell;
+        std::shared_ptr<Source> src;
+        std::shared_ptr<const Picture> pic;
+    };
+    std::vector<Drawable> items;
+    if (!layoutSet) {
+        // No layout from the window yet: show the first camera, fitted.
+        std::lock_guard<std::mutex> l(g_srcMutex);
+        if (!g_sources.empty()) cells.push_back(Cell{g_sources.begin()->first, 0, 0, 1, 1, false});
+    }
+    int cellsWithCamera = 0;
+    for (const Cell& c : cells) {
+        auto src = FindSource(c.src);
+        if (!src) continue;
+        ++cellsWithCamera;
+        std::shared_ptr<const Picture> pic;
+        {
+            std::lock_guard<std::mutex> l(src->picMutex);
+            pic = src->latest;
+        }
+        if (pic && pic->w >= 2 && pic->h >= 2) items.push_back({c, src, pic});
+    }
+    if (items.empty()) return false;
+
+    // One camera: the canvas follows its picture (the shorter side sets the height, up to 4K).
+    // Several cameras: a Full HD canvas.
+    int canvasH = 1080;
+    if (cellsWithCamera == 1) {
+        canvasH = static_cast<int>(std::min<uint32_t>(kMaxFrameHeight, std::min(items[0].pic->w, items[0].pic->h)));
+    }
+    canvasH = std::max(canvasH & ~1, 2);
+    int canvasW = static_cast<int>(std::min<uint32_t>(kMaxFrameWidth, static_cast<uint32_t>(canvasH) * 16 / 9)) & ~1;
+    outW = canvasW;
+    outH = canvasH;
+    const size_t ySize = static_cast<size_t>(canvasW) * canvasH;
+    out.resize(ySize * 3 / 2);
+    memset(out.data(), 16, ySize);                 // black
+    memset(out.data() + ySize, 128, ySize / 2);
+
+    for (const Drawable& d : items) {
+        auto px = [](double frac, int total) { return std::clamp(static_cast<int>(frac * total + 0.5), 0, total); };
+        int x0 = px(d.cell.x, canvasW) & ~1, y0 = px(d.cell.y, canvasH) & ~1;
+        int x1 = px(d.cell.x + d.cell.w, canvasW) & ~1, y1 = px(d.cell.y + d.cell.h, canvasH) & ~1;
+        const int rot = d.src->rotation.load() + (d.src->flip.load() ? 180 : 0);
+        DrawCell(*d.pic, rot, d.cell.cover, out.data(), out.data() + ySize, canvasW, x0, y0, x1 - x0, y1 - y0);
+    }
+    return true;
+}
+
+void CompositorLoop() {
+    std::vector<BYTE> frame;
+    auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(g_composeMutex);
+            g_composeCv.wait_for(lk, std::chrono::milliseconds(200), [] { return g_dirty.load(); });
+        }
+        if (!g_dirty.exchange(false)) continue;
+        std::this_thread::sleep_until(last + std::chrono::milliseconds(30));  // about 33 pictures a second at most
+        last = std::chrono::steady_clock::now();
+        int w = 0, h = 0;
+        if (ComposeFrame(frame, w, h)) {
+            const uint64_t ts = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                          last.time_since_epoch()).count() / 100);
+            Publish(frame.data(), static_cast<uint32_t>(w), static_cast<uint32_t>(h), ts);
+        }
+    }
+}
 
 // ---------- TCP server ----------
 
@@ -490,48 +627,41 @@ bool RecvAll(SOCKET s, void* buf, size_t len) {
     return true;
 }
 
-// ---------- orientation control (desktop app -> phone) ----------
-// The desktop app can lock how the phone orients its picture. The phone reads control packets
-// (type 2) from the same socket it streams on: payload { 1, mode, flip }.
-// mode: 0 follow the phone's sensor, 1 landscape, 2 portrait. flip: 1 turns it 180 degrees.
+// ---------- control (desktop app -> phone) ----------
+// The phone reads control packets (type 2) from the same socket it streams on.
+//   { 1, mode, flip }                    orientation. The receiver always sends mode 0: the phone
+//                                        follows its own sensor and the picture is upright.
+//   { 2, u16 width, u16 height }         picture size to capture; 0x0 means Auto.
+// The phone sends back:
+//   { 3, count, count x (u16 w, u16 h), u16 curW, u16 curH, auto }   the sizes it can do
+//   { 4, utf8 text... }                  its name (for example the phone model)
 
-// Resolution: payload { 2, u16 width, u16 height } to the phone; 0x0 means Auto. The phone answers
-// with its supported sizes: { 3, count, count x (u16 w, u16 h), u16 curW, u16 curH, auto } which is
-// printed as a "[cap]" line for the desktop app.
-
-std::atomic<int> g_resW{0};  // 0 = Auto
-std::atomic<int> g_resH{0};
-std::mutex g_clientMutex;
-SOCKET g_clientSock = INVALID_SOCKET;
-
-void SendControl(const BYTE* payload, uint32_t len) {
-    std::lock_guard<std::mutex> l(g_clientMutex);
-    if (g_clientSock == INVALID_SOCKET) return;
+void SendControl(Source& s, const BYTE* payload, uint32_t len) {
+    std::lock_guard<std::mutex> l(s.sockMutex);
+    if (s.sock == INVALID_SOCKET) return;
     std::vector<BYTE> pkt(kHeaderLen + len, 0);
     pkt[0] = 1;  // protocol version
     pkt[1] = 2;  // packet type: control
     memcpy(pkt.data() + 20, &len, sizeof(len));
     memcpy(pkt.data() + kHeaderLen, payload, len);
-    send(g_clientSock, reinterpret_cast<const char*>(pkt.data()), static_cast<int>(pkt.size()), 0);
+    send(s.sock, reinterpret_cast<const char*>(pkt.data()), static_cast<int>(pkt.size()), 0);
 }
 
-// The phone always follows its own motion sensor, so the picture it sends is upright however it
-// is held. The frame layout (Auto, Landscape, Portrait) is applied here on the computer.
-void SendOrientation() {
+void SendOrientation(Source& s) {
     const BYTE p[3] = {1, 0, 0};  // mode 0: follow the sensor
-    SendControl(p, sizeof(p));
+    SendControl(s, p, sizeof(p));
 }
 
-void SendResolution() {
-    const uint16_t w = static_cast<uint16_t>(g_resW.load()), h = static_cast<uint16_t>(g_resH.load());
+void SendResolution(Source& s, int w, int h) {
+    const uint16_t pw = static_cast<uint16_t>(w), ph = static_cast<uint16_t>(h);
     BYTE p[5] = {2};
-    memcpy(p + 1, &w, 2);
-    memcpy(p + 3, &h, 2);
-    SendControl(p, sizeof(p));
+    memcpy(p + 1, &pw, 2);
+    memcpy(p + 3, &ph, 2);
+    SendControl(s, p, sizeof(p));
 }
 
 // Turns the phone's capability message into one line the desktop app can read.
-void PrintCapabilities(const std::vector<BYTE>& p) {
+void PrintCapabilities(int id, const std::vector<BYTE>& p) {
     if (p.size() < 2) return;
     const size_t count = p[1];
     if (p.size() < 2 + count * 4 + 5) return;
@@ -547,20 +677,63 @@ void PrintCapabilities(const std::vector<BYTE>& p) {
     memcpy(&cw, p.data() + 2 + count * 4, 2);
     memcpy(&ch, p.data() + 2 + count * 4 + 2, 2);
     const int autoMode = p[2 + count * 4 + 4];
-    std::printf("[cap] sizes=%s current=%ux%u auto=%d\n", sizes.c_str(), cw, ch, autoMode);
+    std::printf("[src %d] cap sizes=%s current=%ux%u auto=%d\n", id, sizes.c_str(), cw, ch, autoMode);
+}
+
+// Takes a camera out of the list (its connection ended) and lets the compositor redraw.
+void RemoveSource(const std::shared_ptr<Source>& src) {
+    src->alive = false;
+    {
+        std::lock_guard<std::mutex> l(g_srcMutex);
+        g_sources.erase(src->id);
+    }
+    std::printf("[src %d] disconnected\n", src->id);
+    MarkDirty();
+}
+
+// Registers a new camera and returns it, or null when the limit is reached.
+std::shared_ptr<Source> AddSource(const std::string& peer, bool simulated, SourceSettings* settingsOut) {
+    std::lock_guard<std::mutex> l(g_srcMutex);
+    if (g_sources.size() >= kMaxSources) return nullptr;
+    auto src = std::make_shared<Source>();
+    src->id = g_nextSourceId++;
+    src->peer = peer;
+    src->simulated = simulated;
+    const SourceSettings st = g_settings[peer];
+    src->flip = st.flip;
+    if (settingsOut) *settingsOut = st;
+    g_sources[src->id] = src;
+    return src;
 }
 
 void ServeClient(SOCKET c, std::string peer) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    std::printf("[tcp] phone connected from %s\n", peer.c_str());
-    H264Decoder dec;
-    if (!dec.Init()) { closesocket(c); CoUninitialize(); return; }
-    {
-        std::lock_guard<std::mutex> l(g_clientMutex);
-        g_clientSock = c;
+    SourceSettings settings;
+    auto src = AddSource(peer, false, &settings);
+    if (!src) {
+        std::fprintf(stderr, "[tcp] too many cameras, refusing %s\n", peer.c_str());
+        closesocket(c);
+        CoUninitialize();
+        return;
     }
-    SendOrientation();  // a phone that connects later still gets the current settings
-    SendResolution();
+    src->sock = c;
+    std::printf("[src %d] connected from %s\n", src->id, peer.c_str());
+    H264Decoder dec;
+    if (!dec.Init()) {
+        RemoveSource(src);
+        closesocket(c);
+        CoUninitialize();
+        return;
+    }
+    dec.onPicture = [src](std::shared_ptr<const Picture> p) {
+        {
+            std::lock_guard<std::mutex> l(src->picMutex);
+            src->latest = std::move(p);
+        }
+        MarkDirty();
+    };
+    SendOrientation(*src);  // a phone that connects later still gets the current settings
+    SendResolution(*src, settings.resW, settings.resH);
 
     std::vector<BYTE> config, payload, unit;
     uint64_t bytes = 0, frames = 0, lastBytes = 0, lastFrames = 0, lastDecoded = 0;
@@ -570,7 +743,7 @@ void ServeClient(SOCKET c, std::string peer) {
     for (;;) {
         BYTE hdr[kHeaderLen];
         if (!RecvAll(c, hdr, kHeaderLen)) break;
-        if (hdr[0] != 1) { std::fprintf(stderr, "[tcp] bad protocol version %u\n", hdr[0]); break; }
+        if (hdr[0] != 1) { std::fprintf(stderr, "[src %d] bad protocol version %u\n", src->id, hdr[0]); break; }
         const uint8_t type = hdr[1], flags = hdr[3];
         uint64_t ptsUs;
         uint32_t len;
@@ -581,10 +754,10 @@ void ServeClient(SOCKET c, std::string peer) {
         memcpy(&ph, hdr + 18, 2);
         memcpy(&rot, hdr + 24, 2);
         if (type != 2) {  // control packets carry no rotation
-            if (rot != dec.rotation) std::printf("[tcp] rotation %u -> %u degrees\n", dec.rotation, rot);
-            dec.rotation = rot;
+            const int old = src->rotation.exchange(rot);
+            if (old != rot) std::printf("[src %d] rotation %d -> %u degrees\n", src->id, old, rot);
         }
-        if (len > kMaxPayload) { std::fprintf(stderr, "[tcp] payload too large (%u)\n", len); break; }
+        if (len > kMaxPayload) { std::fprintf(stderr, "[src %d] payload too large (%u)\n", src->id, len); break; }
         payload.resize(len);
         if (len && !RecvAll(c, payload.data(), len)) break;
         bytes += kHeaderLen + len;
@@ -592,11 +765,16 @@ void ServeClient(SOCKET c, std::string peer) {
         if (flags & kFlagConfig) {
             config = payload;
             w = pw; h = ph;
-            std::printf("[tcp] stream %ux%u, config %u bytes\n", w, h, len);
+            std::printf("[src %d] stream %ux%u\n", src->id, w, h);
             continue;
         }
         if (type == 2) {  // control message from the phone
-            if (!payload.empty() && payload[0] == 3) PrintCapabilities(payload);
+            if (!payload.empty() && payload[0] == 3) PrintCapabilities(src->id, payload);
+            if (payload.size() > 1 && payload[0] == 4) {
+                std::string name(payload.begin() + 1, payload.end());
+                for (char& ch : name) if (ch == '\n' || ch == '\r') ch = ' ';
+                std::printf("[src %d] name %s\n", src->id, name.c_str());
+            }
             continue;
         }
         ++frames;
@@ -611,20 +789,110 @@ void ServeClient(SOCKET c, std::string peer) {
         auto now = std::chrono::steady_clock::now();
         if (now - lastReport >= std::chrono::seconds(1)) {
             const double secs = std::chrono::duration<double>(now - lastReport).count();
-            std::printf("[rx] %.0f fps in, %.0f fps decoded, %.0f kbps, decode errors %llu\n",
+            std::printf("[src %d] rx %.0f fps in, %.0f fps decoded, %.0f kbps, decode errors %llu\n", src->id,
                         (frames - lastFrames) / secs, (dec.decoded - lastDecoded) / secs,
                         (bytes - lastBytes) * 8 / 1000.0 / secs, static_cast<unsigned long long>(dec.errors));
             lastReport = now;
             lastBytes = bytes; lastFrames = frames; lastDecoded = dec.decoded;
         }
     }
-    std::printf("[tcp] phone disconnected\n");
     {
-        std::lock_guard<std::mutex> l(g_clientMutex);
-        g_clientSock = INVALID_SOCKET;
+        std::lock_guard<std::mutex> l(src->sockMutex);
+        src->sock = INVALID_SOCKET;
     }
+    RemoveSource(src);
     closesocket(c);
     CoUninitialize();
+}
+
+// ---------- simulated cameras (development and demos: `--simulate N`) ----------
+// Each one draws a moving test picture with its number, so layouts can be tried without phones.
+// Even numbers are tall (portrait) pictures.
+
+const char* const kDigitRows[10][7] = {
+    {"01110", "10001", "10011", "10101", "11001", "10001", "01110"},
+    {"00100", "01100", "00100", "00100", "00100", "00100", "01110"},
+    {"01110", "10001", "00001", "00010", "00100", "01000", "11111"},
+    {"11110", "00001", "00001", "01110", "00001", "00001", "11110"},
+    {"00010", "00110", "01010", "10010", "11111", "00010", "00010"},
+    {"11111", "10000", "11110", "00001", "00001", "10001", "01110"},
+    {"00110", "01000", "10000", "11110", "10001", "10001", "01110"},
+    {"11111", "00001", "00010", "00100", "01000", "01000", "01000"},
+    {"01110", "10001", "10001", "01110", "10001", "10001", "01110"},
+    {"01110", "10001", "10001", "01111", "00001", "00010", "01100"},
+};
+
+std::shared_ptr<Picture> MakeTestPicture(int w, int h, int number, double t) {
+    auto pic = std::make_shared<Picture>();
+    pic->w = static_cast<uint32_t>(w);
+    pic->h = static_cast<uint32_t>(h);
+    pic->nv12.resize(static_cast<size_t>(w) * h * 3 / 2);
+    BYTE* y = pic->nv12.data();
+    BYTE* uv = y + static_cast<size_t>(w) * h;
+    static const BYTE palette[6][2] = {{110, 190}, {190, 110}, {70, 90}, {160, 60}, {90, 170}, {140, 150}};
+    const BYTE* col = palette[(number - 1) % 6];
+    const int shift = static_cast<int>(t * 90) % w;
+    for (int j = 0; j < h; ++j) {
+        for (int i = 0; i < w; ++i) y[static_cast<size_t>(j) * w + i] = static_cast<BYTE>(50 + 110 * ((i + shift) % w) / w + 30 * j / h);
+    }
+    for (int j = 0; j < h / 2; ++j) {
+        for (int i = 0; i < w / 2; ++i) {
+            uv[static_cast<size_t>(j) * w + i * 2] = col[0];
+            uv[static_cast<size_t>(j) * w + i * 2 + 1] = col[1];
+        }
+    }
+    // a white box sweeping across, and the camera number in the middle
+    const int box = h / 7, bx = static_cast<int>((std::sin(t * 1.5) * 0.5 + 0.5) * (w - box)), by = h / 12;
+    for (int j = by; j < by + box && j < h; ++j) memset(y + static_cast<size_t>(j) * w + bx, 235, std::min(box, w - bx));
+    const int scale = std::max(2, h / 14);
+    const int tx = (w - 5 * scale) / 2, ty = (h - 7 * scale) / 2;
+    for (int r = 0; r < 7; ++r) {
+        for (int cI = 0; cI < 5; ++cI) {
+            if (kDigitRows[number % 10][r][cI] != '1') continue;
+            for (int j = 0; j < scale; ++j) {
+                const int yy = ty + r * scale + j;
+                if (yy < 0 || yy >= h) continue;
+                memset(y + static_cast<size_t>(yy) * w + tx + cI * scale, 240, scale);
+            }
+        }
+    }
+    return pic;
+}
+
+void RunSimulatedSource(std::shared_ptr<Source> src, int number) {
+    const bool portrait = number % 2 == 0;
+    std::printf("[src %d] connected from simulated\n", src->id);
+    std::printf("[src %d] name Test camera %d\n", src->id, number);
+    std::printf("[src %d] cap sizes=640x360,1280x720,1920x1080 current=1280x720 auto=1\n", src->id);
+    std::printf("[src %d] stream 1280x720\n", src->id);
+    const auto begin = std::chrono::steady_clock::now();
+    auto lastReport = begin;
+    int frames = 0;
+    while (src->alive.load()) {
+        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+        auto pic = portrait ? MakeTestPicture(540, 960, number, t) : MakeTestPicture(1280, 720, number, t);
+        {
+            std::lock_guard<std::mutex> l(src->picMutex);
+            src->latest = pic;
+        }
+        MarkDirty();
+        ++frames;
+        if (std::chrono::steady_clock::now() - lastReport >= std::chrono::seconds(1)) {
+            std::printf("[src %d] rx %d fps in, %d fps decoded, 0 kbps, decode errors 0\n", src->id, frames, frames);
+            frames = 0;
+            lastReport = std::chrono::steady_clock::now();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
+}
+
+void AddSimulatedSources(int count) {
+    for (int i = 0; i < count; ++i) {
+        auto src = AddSource("simulated-" + std::to_string(g_nextSourceId), true, nullptr);
+        if (!src) return;
+        const int number = src->id;
+        std::thread([src, number] { RunSimulatedSource(src, number); }).detach();
+    }
 }
 
 // ---------- mDNS / DNS-SD announcement (_camnexo._tcp) ----------
@@ -708,51 +976,89 @@ void StopMdns() {
 }
 
 // The desktop app talks to the receiver through stdin, one command per line:
-//   quit                                  clean exit (withdraws the network announcement)
-//   orientation <auto|landscape|portrait> <0|1>   output frame layout (Auto fits, Landscape and
-//                                         Portrait are fixed frames that crop to fill); 1 = flip 180
-//   resolution auto | resolution <w> <h>  picture size the phone captures
+//   quit                                       clean exit (withdraws the network announcement)
+//   resolution <id> auto | <id> <w> <h>        picture size camera <id> captures
+//   flip <id> <0|1>                            turn camera <id> by 180 degrees (upside-down mount)
+//   disconnect <id>                            drop camera <id>
+//   layout <n> {<id> <x> <y> <w> <h> <cover>}  the cells of the output frame: n cells, each with the
+//                                              camera, a rectangle in fractions of the frame, and
+//                                              cover (1) = fill and crop, (0) = fit the whole picture
+//   simulate <n>                               add n test cameras (development)
 // EOF is ignored on purpose: the receiver can also run with no console attached.
 void WatchStdin() {
-    char line[96];
+    char line[8192];
     while (std::fgets(line, sizeof(line), stdin)) {
-        if (std::strncmp(line, "quit", 4) == 0) {
+        std::istringstream in(line);
+        std::string cmd;
+        in >> cmd;
+        if (cmd == "quit") {
             std::printf("[mdns] withdrawing announcement\n");
             StopMdns();
             std::exit(0);
-        }
-        // resolution auto | resolution <width> <height>
-        {
-            char word[24] = {};
-            int rw = 0, rh = 0;
-            if (std::sscanf(line, "resolution %23s %d", word, &rh) >= 1) {
-                if (std::strcmp(word, "auto") == 0) {
-                    g_resW = 0;
-                    g_resH = 0;
-                } else if (std::sscanf(line, "resolution %d %d", &rw, &rh) == 2 && rw > 0 && rh > 0) {
-                    g_resW = rw;
-                    g_resH = rh;
-                } else {
-                    continue;
-                }
-                std::printf("[ctl] resolution %d x %d\n", g_resW.load(), g_resH.load());
-                SendResolution();
-                continue;
+        } else if (cmd == "resolution") {
+            int id = 0;
+            std::string a;
+            in >> id >> a;
+            auto src = FindSource(id);
+            if (!src) continue;
+            int w = 0, h = 0;
+            if (a != "auto") {
+                w = std::atoi(a.c_str());
+                in >> h;
+                if (w <= 0 || h <= 0) continue;
             }
-        }
-        char mode[24] = {};
-        int flip = 0;
-        if (std::sscanf(line, "orientation %23s %d", mode, &flip) >= 1) {
-            int m = -1;
-            if (std::strcmp(mode, "auto") == 0) m = 0;
-            else if (std::strcmp(mode, "landscape") == 0) m = 1;
-            else if (std::strcmp(mode, "portrait") == 0) m = 2;
-            if (m >= 0) {
-                // Applied here when composing each frame; the phone stays on its own sensor.
-                g_layoutMode = m;
-                g_layoutFlip = flip ? 1 : 0;
-                std::printf("[ctl] layout %s flip %d\n", mode, flip ? 1 : 0);
+            {
+                std::lock_guard<std::mutex> l(g_srcMutex);
+                g_settings[src->peer].resW = w;
+                g_settings[src->peer].resH = h;
             }
+            std::printf("[ctl] resolution %d %d x %d\n", id, w, h);
+            if (!src->simulated) SendResolution(*src, w, h);
+        } else if (cmd == "flip") {
+            int id = 0, on = 0;
+            in >> id >> on;
+            auto src = FindSource(id);
+            if (!src) continue;
+            src->flip = on != 0;
+            {
+                std::lock_guard<std::mutex> l(g_srcMutex);
+                g_settings[src->peer].flip = on != 0;
+            }
+            std::printf("[ctl] flip %d %d\n", id, on ? 1 : 0);
+            MarkDirty();
+        } else if (cmd == "disconnect") {
+            int id = 0;
+            in >> id;
+            auto src = FindSource(id);
+            if (!src) continue;
+            if (src->simulated) {
+                RemoveSource(src);
+            } else {
+                std::lock_guard<std::mutex> l(src->sockMutex);
+                if (src->sock != INVALID_SOCKET) shutdown(src->sock, SD_BOTH);  // the reader thread ends and cleans up
+            }
+        } else if (cmd == "layout") {
+            int n = 0;
+            in >> n;
+            std::vector<Cell> cells;
+            for (int i = 0; i < n && i < 32; ++i) {
+                Cell c;
+                int cover = 0;
+                if (!(in >> c.src >> c.x >> c.y >> c.w >> c.h >> cover)) break;
+                c.cover = cover != 0;
+                cells.push_back(c);
+            }
+            {
+                std::lock_guard<std::mutex> l(g_layoutMutex);
+                g_cells = std::move(cells);
+                g_layoutSet = true;
+            }
+            std::printf("[ctl] layout %zu cells\n", g_cells.size());
+            MarkDirty();
+        } else if (cmd == "simulate") {
+            int n = 0;
+            in >> n;
+            AddSimulatedSources(std::clamp(n, 0, 8));
         }
     }
 }
@@ -775,8 +1081,14 @@ void PrintAddresses() {
 
 int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);  // logs are read from a redirected file while running
+    int simulate = 0;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::wstring(argv[i]) == L"--snap") g_snapPath = argv[i + 1];
+        if (std::wstring(argv[i]) == L"--simulate") simulate = _wtoi(argv[i + 1]);
+        if (std::wstring(argv[i]) == L"--port") kPort = static_cast<unsigned short>(_wtoi(argv[i + 1]));
+    }
+    for (int i = 1; i < argc; ++i) {
+        if (std::wstring(argv[i]) == L"--no-discovery") g_noDiscovery = true;
     }
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -785,6 +1097,7 @@ int wmain(int argc, wchar_t** argv) {
 
     std::thread(PipeServer).detach();
     std::thread(PreviewPipeServer).detach();
+    std::thread(CompositorLoop).detach();
 
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in addr{};
@@ -793,15 +1106,16 @@ int wmain(int argc, wchar_t** argv) {
     addr.sin_port = htons(kPort);
     BOOL reuse = TRUE;
     setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
-    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(listener, 1) != 0) {
+    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(listener, 8) != 0) {
         std::fprintf(stderr, "Cannot listen on port %u (error %d). Is another receiver running?\n", kPort, WSAGetLastError());
         return 1;
     }
     std::printf("CamNexo receiver listening on TCP %u. Enter one of these in the phone app:\n", kPort);
     PrintAddresses();
     std::printf("  (USB: run `adb reverse tcp:%u tcp:%u`, then use 127.0.0.1)\n\n", kPort, kPort);
-    StartMdns();
+    if (!g_noDiscovery) StartMdns();
     std::thread(WatchStdin).detach();
+    if (simulate > 0) AddSimulatedSources(std::min(simulate, 8));
 
     for (;;) {
         sockaddr_in peer{};
@@ -812,7 +1126,7 @@ int wmain(int argc, wchar_t** argv) {
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
         char ip[64]{};
         inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
-        // One phone at a time: serve inline so a second connection waits in the backlog.
-        ServeClient(c, ip);
+        // Every phone gets its own thread, decoder and place in the layout.
+        std::thread(ServeClient, c, std::string(ip)).detach();
     }
 }

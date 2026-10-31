@@ -8,7 +8,7 @@
 
 #define CAMNEXO_FRAME_PIPE L"\\\\.\\pipe\\camnexo-frames"
 
-// A second, small stream for the desktop window's preview: always kPreviewWidth x kPreviewHeight,
+// A second, small stream for the desktop window's preview: always kPreviewWidth x kPreviewHeight (the composed layout),
 // RGBA (4 bytes per pixel), about 15 per second. The window does not have to touch full-size frames.
 #define CAMNEXO_PREVIEW_PIPE L"\\\\.\\pipe\\camnexo-preview"
 
@@ -17,8 +17,8 @@ constexpr uint32_t kFramePipeMagic = 0x46584E43;  // "CNXF"
 // Frames on the camera pipe are NV12 and can be any size up to 4K; the header says which.
 constexpr uint32_t kMaxFrameWidth = 3840;
 constexpr uint32_t kMaxFrameHeight = 2160;
-constexpr uint32_t kPreviewWidth = 640;
-constexpr uint32_t kPreviewHeight = 360;
+constexpr uint32_t kPreviewWidth = 960;
+constexpr uint32_t kPreviewHeight = 540;
 
 // Size used before a phone has said anything (test pattern, default format).
 constexpr uint32_t kOutWidth = 1280;
