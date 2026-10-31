@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -26,7 +27,7 @@ const OrtApi* g_ort = nullptr;
 OrtEnv* g_env = nullptr;
 OrtSession* g_session = nullptr;
 OrtMemoryInfo* g_mem = nullptr;
-bool g_ready = false;
+std::atomic<bool> g_ready{false};  // set once, possibly while the receiver is already running
 
 // MODNet is fully convolutional (sizes in steps of 32). A small size is enough to tell the person from
 // the room, and keeps one run to a few tens of milliseconds.

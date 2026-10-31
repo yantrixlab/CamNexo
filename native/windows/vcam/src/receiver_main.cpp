@@ -923,6 +923,41 @@ void StopMdns() {
     }
 }
 
+bool FileExists(const std::wstring& path) {
+    const DWORD a = GetFileAttributesW(path.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Background effects need onnxruntime.dll and the model. They are not part of the installer: the desktop
+// app downloads them into %LOCALAPPDATA%\CamNexo\effects on first use. A copy next to this program (a
+// development build) is used first.
+void InitEffects() {
+    if (fx::Available()) {
+        std::printf("[fx] background effects ready\n");
+        return;
+    }
+    std::vector<std::wstring> dirs;
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring exeDir(path);
+    dirs.push_back(exeDir.substr(0, exeDir.find_last_of(L'\\')));
+    wchar_t local[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) dirs.push_back(std::wstring(local) + L"\\CamNexo\\effects");
+
+    std::string why = "not installed";
+    for (const auto& dir : dirs) {
+        if (!FileExists(dir + L"\\onnxruntime.dll") || !FileExists(dir + L"\\models\\modnet.onnx")) continue;
+        std::string err;
+        if (fx::Init(dir, &err)) {
+            std::printf("[fx] background effects ready\n");
+            return;
+        }
+        why = err;  // the files are there but would not load: say why
+    }
+    std::printf("[fx] background effects unavailable (%s)\n", why.c_str());
+}
+
 // The desktop app talks to the receiver through stdin, one command per line:
 //   quit                                       clean exit (withdraws the network announcement)
 //   resolution <id> auto | <id> <w> <h>        picture size camera <id> captures
@@ -931,6 +966,7 @@ void StopMdns() {
 //   layout <n> {<id> <x> <y> <w> <h> <cover>}  the cells of the output frame: n cells, each with the
 //                                              camera, a rectangle in fractions of the frame, and
 //                                              cover (1) = fill and crop, (0) = fit the whole picture
+//   fxinit                                     look again for the effects files (after they were downloaded)
 //   simulate <n>                               add n test cameras (development)
 // EOF is ignored on purpose: the receiver can also run with no console attached.
 void WatchStdin() {
@@ -1034,6 +1070,8 @@ void WatchStdin() {
                 src->fxSettings = st;
             }
             std::printf("[ctl] effect %d mode %d\n", id, st->mode);
+        } else if (cmd == "fxinit") {
+            InitEffects();
         } else if (cmd == "simulate") {
             int n = 0;
             in >> n;
@@ -1122,16 +1160,7 @@ int wmain(int argc, wchar_t** argv) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
 
-    // Background effects: the model and onnxruntime.dll live next to this program.
-    {
-        wchar_t path[MAX_PATH];
-        GetModuleFileNameW(nullptr, path, MAX_PATH);
-        std::wstring dir(path);
-        dir = dir.substr(0, dir.find_last_of(L'\\'));
-        std::string why;
-        if (fx::Init(dir, &why)) std::printf("[fx] background effects ready\n");
-        else std::printf("[fx] background effects unavailable (%s)\n", why.c_str());
-    }
+    InitEffects();
     if (!fxTestIn.empty()) return RunFxTest(fxTestIn, fxTestOut, fxTestMode, fxTestBg);
 
     std::thread(PipeServer).detach();

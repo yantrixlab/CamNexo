@@ -51,7 +51,13 @@ class _EffectsPanelState extends State<EffectsPanel> {
           title: 'Effects',
           subtitle: s == null ? 'Connect a phone to use effects' : 'Applied to what Zoom, Meet, Teams and OBS see',
           onClose: widget.onClose,
-          child: s == null ? _empty() : _body(s),
+          child: s == null
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [if (_showDownload) _downloadCard(), _empty()],
+                )
+              : _body(s),
         );
       },
     );
@@ -65,6 +71,82 @@ class _EffectsPanelState extends State<EffectsPanel> {
           style: TextStyle(fontSize: 12, color: Colors.white70, height: 1.35),
         ),
       );
+
+  bool get _showDownload =>
+      c.effectsDownload != EffectsDownload.idle || c.fxNeedsDownload;
+
+  static String _mb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
+
+  /// Background blur and replacement need files that are not in the installer: offer the one-time download.
+  Widget _downloadCard() {
+    final state = c.effectsDownload;
+    final downloading = state == EffectsDownload.downloading;
+    final installing = state == EffectsDownload.installing;
+    final failed = state == EffectsDownload.failed;
+    final total = c.effectsTotal > 0 ? c.effectsTotal : c.pack.spec.size;
+    final size = _mb(c.pack.spec.size);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0x1A60A5FA),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0x6660A5FA)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            downloading
+                ? 'Downloading… ${_mb(c.effectsReceived)} of ${_mb(total)} MB'
+                : installing
+                    ? 'Installing…'
+                    : 'Background blur and replacement need a one-time download ($size MB)',
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          if (downloading || installing) ...[
+            LinearProgressIndicator(
+              value: installing ? null : (c.effectsReceived / total).clamp(0.0, 1.0),
+              minHeight: 4,
+              borderRadius: BorderRadius.circular(2),
+            ),
+            const SizedBox(height: 8),
+            if (downloading)
+              TextButton(
+                onPressed: c.cancelEffectsDownload,
+                style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30), alignment: Alignment.centerLeft),
+                child: const Text('Cancel', style: TextStyle(fontSize: 11.5)),
+              ),
+          ] else ...[
+            if (failed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(c.effectsDownloadError ?? 'The download failed.',
+                    style: const TextStyle(fontSize: 11.5, color: Color(0xFFFCA5A5), height: 1.3)),
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'It is saved once on this computer. Colour looks work without it, and what you pick here applies as soon as it is installed.',
+                  style: TextStyle(fontSize: 11.5, color: Colors.white70, height: 1.3),
+                ),
+              ),
+            FilledButton(
+              onPressed: c.downloadEffects,
+              style: FilledButton.styleFrom(
+                backgroundColor: brandBlue,
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: Text(failed ? 'Try again' : 'Download ($size MB)', style: const TextStyle(fontSize: 12)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 
   Widget _section(String title, Widget child) => Padding(
         padding: const EdgeInsets.only(bottom: 14),
@@ -115,7 +197,8 @@ class _EffectsPanelState extends State<EffectsPanel> {
     }
 
     final look = fx.look;
-    final showWarning = !c.fxAvailable && c.receiverListening;
+    final showDownload = _showDownload;
+    final showWarning = !showDownload && !c.fxAvailable && c.receiverListening;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -129,6 +212,7 @@ class _EffectsPanelState extends State<EffectsPanel> {
               children: [for (final cam in c.sources) _chip(cam.label, cam.key == s.key, () => setState(() => _selectedKey = cam.key))],
             ),
           ),
+        if (showDownload) _downloadCard(),
         if (showWarning)
           Container(
             margin: const EdgeInsets.only(bottom: 12),
@@ -138,10 +222,21 @@ class _EffectsPanelState extends State<EffectsPanel> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0x66F59E0B)),
             ),
-            child: Text(
-              'Background effects are not available in this install${c.fxMessage == null ? '' : ' (${c.fxMessage})'}. '
-              'Colour looks still work.',
-              style: const TextStyle(fontSize: 11.5, color: Color(0xFFFCD34D), height: 1.3),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Background effects could not start${c.fxMessage == null ? '' : ' (${c.fxMessage})'}. '
+                  'Colour looks still work.',
+                  style: const TextStyle(fontSize: 11.5, color: Color(0xFFFCD34D), height: 1.3),
+                ),
+                if (c.fxMessage != null)
+                  TextButton(
+                    onPressed: c.downloadEffects,
+                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30), alignment: Alignment.centerLeft),
+                    child: const Text('Download the effects files again', style: TextStyle(fontSize: 11.5)),
+                  ),
+              ],
             ),
           ),
         _section(

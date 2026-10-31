@@ -8,11 +8,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_source.dart';
 import 'effects_model.dart';
+import 'effects_pack.dart';
 import 'layout_model.dart';
 
 export 'camera_source.dart';
 
 enum PhoneState { waiting, connected, streaming }
+
+/// Progress of the one-time download of the effects files.
+enum EffectsDownload { idle, downloading, installing, failed }
 
 enum CameraState { stopped, starting, ready, setupRequired, failed }
 
@@ -82,6 +86,53 @@ class DesktopController extends ChangeNotifier {
   /// Whether the receiver can do background effects (it needs onnxruntime.dll and its model).
   bool fxAvailable = false;
   String? fxMessage;
+
+  DesktopController({EffectsPack? pack}) : pack = pack ?? EffectsPack();
+
+  /// The downloadable part of the effects (the installer does not carry it).
+  final EffectsPack pack;
+  EffectsDownload effectsDownload = EffectsDownload.idle;
+  int effectsReceived = 0;
+  int effectsTotal = 0;
+  String? effectsDownloadError;
+
+  /// The receiver is running but has no effects files yet: offer the download.
+  bool get fxNeedsDownload => !fxAvailable && receiverListening && fxMessage == 'not installed';
+
+  /// Downloads the effects pack, then tells the receiver to load it. Background effects chosen before
+  /// the download apply as soon as it is done.
+  Future<void> downloadEffects() async {
+    if (effectsDownload == EffectsDownload.downloading || effectsDownload == EffectsDownload.installing) return;
+    effectsDownload = EffectsDownload.downloading;
+    effectsDownloadError = null;
+    effectsReceived = 0;
+    effectsTotal = pack.spec.size;
+    notifyListeners();
+    try {
+      await pack.download(
+        onProgress: (received, total) {
+          effectsReceived = received;
+          effectsTotal = total;
+          if (!_disposed) notifyListeners();
+        },
+        onInstalling: () {
+          effectsDownload = EffectsDownload.installing;
+          if (!_disposed) notifyListeners();
+        },
+      );
+      effectsDownload = EffectsDownload.idle;
+      _send('fxinit');
+    } on EffectsPackException catch (e) {
+      effectsDownload = EffectsDownload.failed;
+      effectsDownloadError = e.message;
+    } catch (e) {
+      effectsDownload = EffectsDownload.failed;
+      effectsDownloadError = 'Something went wrong: $e';
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  void cancelEffectsDownload() => pack.cancel();
 
   bool get anyEffects => sources.any((s) => !s.effects.isOff);
 

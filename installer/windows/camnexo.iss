@@ -38,6 +38,13 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Source: "{#Stage}\app\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#Stage}\helpers\*"; DestDir: "{app}\helpers"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[InstallDelete]
+; Versions up to 0.3.0 carried the effects files here. They are downloaded by the app now (into the user's own
+; folder), so remove the old copies instead of keeping 40 MB twice.
+Type: files; Name: "{app}\helpers\onnxruntime.dll"
+Type: files; Name: "{app}\helpers\onnxruntime_providers_shared.dll"
+Type: filesandordirs; Name: "{app}\helpers\models"
+
 [Icons]
 Name: "{group}\CamNexo"; Filename: "{app}\camnexo_desktop.exe"
 Name: "{group}\Uninstall CamNexo"; Filename: "{uninstallexe}"
@@ -60,3 +67,5 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\CamNexo"
+; The downloaded effects files (kept per user; this removes the copy of the user who runs the uninstaller).
+Type: filesandordirs; Name: "{localappdata}\CamNexo\effects"

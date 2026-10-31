@@ -58,6 +58,31 @@ void main() {
     expect(controller.orientation, OrientationMode.auto);
   });
 
+  testWidgets('the Effects panel offers the one-time download when the effects files are missing', (tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final controller = DesktopController();
+    await tester.pumpWidget(CamNexoDesktopApp(controller: controller));
+    connectPhone(controller, 1, '192.168.1.20');
+    controller.debugHandleReceiverLine('CamNexo receiver listening on TCP 7878.');
+    controller.debugHandleReceiverLine('[fx] background effects unavailable (not installed)');
+    await tester.pump();
+    await tester.tap(find.text('Effects'));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.textContaining('one-time download'), findsOneWidget);
+    expect(find.textContaining('Download ('), findsOneWidget);
+    expect(find.textContaining('could not start'), findsNothing);
+
+    // Once the receiver has loaded the files the card goes away.
+    controller.debugHandleReceiverLine('[fx] background effects ready');
+    await tester.pump();
+    expect(find.textContaining('one-time download'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('connecting phones fills the Cameras panel and the layout follows the count', (tester) async {
     tester.view.physicalSize = const Size(1400, 900);
     tester.view.devicePixelRatio = 1.0;
