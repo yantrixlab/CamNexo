@@ -11,3 +11,8 @@ Pods/
 *.jks
 *.pfx
 .env
+
+# Local tooling and the separately hosted website
+.claude/
+web/
+*.exe

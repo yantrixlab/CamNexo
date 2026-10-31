@@ -1,0 +1,8 @@
+CamNexo
+Copyright 2026 Yantrix Labs
+
+This product includes software developed by Yantrix Labs (https://camnexo.yantrixlab.com).
+
+Third-party components keep their own licenses. See the pubspec.yaml and Cargo.toml
+files for the Flutter and Rust dependencies, and the Android and Windows SDK terms for
+the platform libraries (CameraX, MediaCodec, Windows Media Foundation).
