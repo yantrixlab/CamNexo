@@ -15,16 +15,16 @@ Everything to copy into Play Console. The signed bundle is `release/CamNexo-1.0.
 
 ## 2. Create the app
 
-- App name: **CamNexo: Phone as Webcam** (24 of 30 characters)
+- App name: **CamNexo: Phone as PC Webcam** (27 of 30 characters)
 - Default language: English (United States)
 - App or game: **App**. Free or paid: **Free** (pricing can be added later).
 - Declarations: follow the Developer Program Policies and US export laws.
 
 ## 3. Store listing
 
-**Short description** (74 of 80):
+**Short description** (76 of 80):
 
-> Use your phone as a high-quality webcam for your PC. Wireless, no account.
+> Use your phone as a wireless HD webcam for PC. Works with Zoom, Meet, Teams.
 
 **Full description** (copy as is):
 
