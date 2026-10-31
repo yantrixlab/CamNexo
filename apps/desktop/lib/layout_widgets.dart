@@ -193,7 +193,7 @@ class LayoutPicker extends StatelessWidget {
     }
 
     final auto = autoTemplateFor(shown);
-    return _PanelShell(
+    return PanelShell(
       width: 372,
       title: 'Layout',
       subtitle: c.sources.isEmpty
@@ -306,8 +306,8 @@ class LayoutPicker extends StatelessWidget {
 }
 
 /// Floating glass card with a title, used for the Layout and Cameras panels.
-class _PanelShell extends StatelessWidget {
-  const _PanelShell({required this.width, required this.title, this.subtitle, required this.onClose, required this.child});
+class PanelShell extends StatelessWidget {
+  const PanelShell({super.key, required this.width, required this.title, this.subtitle, required this.onClose, required this.child});
 
   final double width;
   final String title;
@@ -369,7 +369,7 @@ class CamerasPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    return _PanelShell(
+    return PanelShell(
       width: 360,
       title: 'Cameras',
       subtitle: c.sources.isEmpty

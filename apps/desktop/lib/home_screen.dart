@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'desktop_controller.dart';
+import 'effects_panel.dart';
 import 'layout_widgets.dart';
 import 'preview_reader.dart';
 
@@ -35,9 +36,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _infoOpen = false;
   bool _camerasOpen = false;
   bool _layoutOpen = false;
+  bool _effectsOpen = false;
   bool _editing = false;
 
-  bool get _panelOpen => _infoOpen || _camerasOpen || _layoutOpen || _editing;
+  bool get _panelOpen => _infoOpen || _camerasOpen || _layoutOpen || _effectsOpen || _editing;
 
   DesktopController get c => widget.controller;
 
@@ -156,6 +158,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     bottom: 56,
                     child: CamerasPanel(controller: c, onClose: () => setState(() => _camerasOpen = false)),
                   ),
+                if (_effectsOpen)
+                  Positioned(
+                    top: 52,
+                    right: 12,
+                    bottom: 56,
+                    child: EffectsPanel(controller: c, onClose: () => setState(() => _effectsOpen = false)),
+                  ),
                 if (_layoutOpen)
                   Positioned(
                     top: 52,
@@ -188,11 +197,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Opens one of the right-hand panels and closes the others.
-  void _openPanel({bool info = false, bool cameras = false, bool layout = false}) {
+  void _openPanel({bool info = false, bool cameras = false, bool layout = false, bool effects = false}) {
     setState(() {
       _infoOpen = info && !_infoOpen;
       _camerasOpen = cameras && !_camerasOpen;
       _layoutOpen = layout && !_layoutOpen;
+      _effectsOpen = effects && !_effectsOpen;
     });
   }
 
@@ -305,6 +315,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 6),
               ],
             ],
+            _effectsButton(),
+            const SizedBox(width: 6),
             _layoutButton(),
             const SizedBox(width: 6),
             _camerasButton(),
@@ -356,6 +368,44 @@ class _HomeScreenState extends State<HomeScreen> {
     return _Pill(
       dot: color,
       text: label,
+    );
+  }
+
+  /// Opens the Effects panel: background blur or replacement and colour looks. A dot shows when
+  /// any camera has an effect on.
+  Widget _effectsButton() {
+    final open = _effectsOpen;
+    return Tooltip(
+      message: 'Blur or replace the background, and colour looks',
+      waitDuration: const Duration(milliseconds: 400),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(9),
+        onTap: () => _openPanel(effects: true),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: open ? _brand : _glass,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: _border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.auto_awesome, size: 15, color: Color(0xFFFDE68A)),
+              const SizedBox(width: 6),
+              const Text('Effects', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+              if (c.anyEffects) ...[
+                const SizedBox(width: 6),
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(color: Colors.greenAccent.shade400, shape: BoxShape.circle),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 

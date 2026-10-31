@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:camnexo_desktop/desktop_controller.dart';
+import 'package:camnexo_desktop/effects_model.dart';
 import 'package:camnexo_desktop/layout_model.dart';
 import 'package:camnexo_desktop/main.dart';
 
@@ -147,6 +148,46 @@ void main() {
     connectPhone(c, 5, '10.0.0.7');
     expect(c.sourceById(5)!.key, '10.0.0.7');
     expect(c.sources.where((s) => s.key == '10.0.0.7').length, 1);
+  });
+
+  group('effects', () {
+    test('a look sets the sliders and is recognised again', () {
+      final warm = lookPresets.firstWhere((p) => p.id == 'warm');
+      final e = const CameraEffects().withLook(warm);
+      expect(e.warmth, warm.warmth);
+      expect(e.look?.id, 'warm');
+      expect(e.copyWith(brightness: e.brightness + 1).look, isNull); // a custom mix
+      expect(const CameraEffects().isOff, isTrue);
+      expect(e.isOff, isFalse);
+    });
+
+    test('effects survive saving and loading', () {
+      const e = CameraEffects(background: BackgroundMode.image, blur: 30, builtIn: 'ocean', customImage: r'C:Picturesme.jpg', contrast: 12, warmth: -8);
+      final back = CameraEffects.fromJson((jsonDecode(jsonEncode(e.toJson())) as Map).cast<String, Object?>());
+      expect(back, e);
+    });
+
+    test('the receiver command carries the mode, strengths and the background file', () {
+      final c = DesktopController();
+      connectPhone(c, 7, '10.0.0.9');
+      final s = c.sourceById(7)!;
+      expect(c.effectLine(s), 'effect 7 0 60 0 0 0 0 -');
+      s.effects = const CameraEffects(background: BackgroundMode.blur, blur: 80, brightness: 5, saturation: -20);
+      expect(c.effectLine(s), 'effect 7 1 80 5 0 -20 0 -');
+      s.effects = const CameraEffects(background: BackgroundMode.image, customImage: r'C:My Pictureswall.png');
+      expect(c.effectLine(s), 'effect 7 2 60 0 0 0 0 C:My Pictureswall.png');
+      s.effects = const CameraEffects(background: BackgroundMode.image, builtIn: 'forest');
+      expect(c.effectLine(s), allOf(startsWith('effect 7 2 60'), endsWith('forest.jpg')));
+    });
+
+    test('the receiver reports whether background effects can run', () {
+      final c = DesktopController();
+      c.debugHandleReceiverLine('[fx] background effects unavailable (onnxruntime.dll was not found next to the receiver)');
+      expect(c.fxAvailable, isFalse);
+      expect(c.fxMessage, contains('onnxruntime.dll'));
+      c.debugHandleReceiverLine('[fx] background effects ready');
+      expect(c.fxAvailable, isTrue);
+    });
   });
 
   group('layout model', () {

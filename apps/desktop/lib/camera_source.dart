@@ -1,3 +1,5 @@
+import 'effects_model.dart';
+
 /// A picture size the phone can capture and encode.
 class Resolution {
   const Resolution(this.width, this.height);
@@ -58,6 +60,9 @@ class CameraSource {
 
   bool flip = false; // turn the picture 180 degrees (a phone mounted upside down)
   bool visible = true; // shown in the layout
+
+  /// Background blur or replacement and colour filters chosen for this camera.
+  CameraEffects effects = const CameraEffects();
 
   /// Size to apply once the phone reports its sizes (restored from an earlier session).
   Resolution? pendingResolution;

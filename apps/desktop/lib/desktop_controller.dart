@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_source.dart';
+import 'effects_model.dart';
 import 'layout_model.dart';
 
 export 'camera_source.dart';
@@ -76,6 +77,58 @@ class DesktopController extends ChangeNotifier {
   final Set<String> _hiddenKeys = {};
   final Set<String> _flipKeys = {};
   final Map<String, String> _resolutionByKey = {}; // "1920x1080"
+  final Map<String, CameraEffects> _effectsByKey = {};
+
+  /// Whether the receiver can do background effects (it needs onnxruntime.dll and its model).
+  bool fxAvailable = false;
+  String? fxMessage;
+
+  bool get anyEffects => sources.any((s) => !s.effects.isOff);
+
+  /// The folder with the ready-made background pictures, inside the app's own files.
+  String get backgroundsDir {
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    return '$exeDir${Platform.pathSeparator}data${Platform.pathSeparator}flutter_assets'
+        '${Platform.pathSeparator}assets${Platform.pathSeparator}backgrounds';
+  }
+
+  String? _backgroundFile(CameraEffects e) {
+    if (e.background != BackgroundMode.image) return null;
+    return e.customImage ?? '$backgroundsDir${Platform.pathSeparator}${e.builtIn}.jpg';
+  }
+
+  /// Changes the effects of one camera. They apply at once, in the picture every app receives.
+  void setEffects(CameraSource s, CameraEffects e) {
+    s.effects = e;
+    if (e.isOff) {
+      _effectsByKey.remove(s.key);
+    } else {
+      _effectsByKey[s.key] = e;
+    }
+    _sendEffects(s);
+    _changed();
+  }
+
+  /// Gives every camera the same effects.
+  void setEffectsForAll(CameraEffects e) {
+    for (final s in sources) {
+      setEffects(s, e);
+    }
+  }
+
+  /// The command that tells the receiver what to do with camera [s].
+  @visibleForTesting
+  String effectLine(CameraSource s) {
+    final e = s.effects;
+    final mode = switch (e.background) {
+      BackgroundMode.none => 0,
+      BackgroundMode.blur => 1,
+      BackgroundMode.image => 2,
+    };
+    return 'effect ${s.id} $mode ${e.blur} ${e.brightness} ${e.contrast} ${e.saturation} ${e.warmth} ${_backgroundFile(e) ?? '-'}';
+  }
+
+  void _sendEffects(CameraSource s) => _send(effectLine(s));
 
   CameraSource? sourceById(int id) {
     for (final s in sources) {
@@ -281,6 +334,10 @@ class DesktopController extends ChangeNotifier {
       _resolutionByKey
         ..clear()
         ..addAll(((j['res'] as Map?) ?? const {}).cast<String, String>());
+      _effectsByKey.clear();
+      ((j['fx'] as Map?) ?? const {}).forEach((k, v) {
+        _effectsByKey[k as String] = CameraEffects.fromJson((v as Map).cast<String, Object?>());
+      });
       layoutMode = LayoutMode.values.firstWhere((m) => m.name == j['mode'], orElse: () => LayoutMode.auto);
       templateId = j['template'] as String?;
       frameShape = OrientationMode.values.firstWhere((m) => m.name == j['shape'], orElse: () => OrientationMode.auto);
@@ -318,6 +375,7 @@ class DesktopController extends ChangeNotifier {
             'hidden': _hiddenKeys.toList(),
             'flip': _flipKeys.toList(),
             'res': _resolutionByKey,
+            'fx': {for (final e in _effectsByKey.entries) e.key: e.value.toJson()},
           }),
         );
       } catch (_) {}
@@ -483,7 +541,11 @@ class DesktopController extends ChangeNotifier {
     } else {
       final addr = RegExp(r'phone address:\s+(\S+)').firstMatch(line);
       final mdns = RegExp(r'\[mdns\] registered as (\S+)').firstMatch(line);
-      if (line.contains('receiver listening')) {
+      final fxLine = RegExp(r'^\[fx\] background effects (ready|unavailable)(?: \((.*)\))?').firstMatch(line);
+      if (fxLine != null) {
+        fxAvailable = fxLine.group(1) == 'ready';
+        fxMessage = fxLine.group(2);
+      } else if (line.contains('receiver listening')) {
         receiverListening = true;
       } else if (mdns != null) {
         discoveryName = mdns.group(1);
@@ -522,6 +584,8 @@ class DesktopController extends ChangeNotifier {
       sources.add(s);
       sources.sort((a, b) => a.id.compareTo(b.id));
       if (s.flip) _send('flip $id 1');
+      s.effects = _effectsByKey[key] ?? const CameraEffects();
+      if (!s.effects.isOff) _sendEffects(s);
       return true;
     }
     final s = sourceById(id);
