@@ -11,6 +11,10 @@ add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_library(camnexo_vcam_source SHARED src/source.cpp src/source.def)
 target_link_libraries(camnexo_vcam_source PRIVATE mfplat mfuuid mfsensorgroup ole32 runtimeobject)
 
+# Desktop receiver: phone TCP stream -> H.264 decode -> frame pipe -> virtual camera.
+add_executable(camnexo_receiver src/receiver_main.cpp)
+target_link_libraries(camnexo_receiver PRIVATE ws2_32 mfplat mf mfuuid wmcodecdspuuid strmiids ole32 advapi32 dnsapi)
+
 # Registers the source COM class and creates the virtual camera for the current session.
 add_executable(camnexo_vcam src/vcam_main.cpp)
 target_link_libraries(camnexo_vcam PRIVATE mfplat mf mfuuid mfreadwrite mfsensorgroup ole32 shell32 advapi32)

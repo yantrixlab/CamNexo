@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "ids.h"
 
@@ -190,8 +191,45 @@ static int SelfTest() {
     return 0;
 }
 
+// Writes one NV12 frame (BT.601 limited range) as a 24-bit BMP so a frame can be inspected by eye.
+static bool DumpBmp(const wchar_t* path, const BYTE* nv12, int w, int h) {
+    std::vector<BYTE> rgb(static_cast<size_t>(w) * h * 3);
+    const BYTE* uv = nv12 + static_cast<size_t>(w) * h;
+    auto clamp = [](int v) { return static_cast<BYTE>(v < 0 ? 0 : v > 255 ? 255 : v); };
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int Y = nv12[y * w + x] - 16;
+            int U = uv[(y / 2) * w + (x / 2) * 2] - 128;
+            int V = uv[(y / 2) * w + (x / 2) * 2 + 1] - 128;
+            int c = 298 * Y;
+            BYTE* p = &rgb[(static_cast<size_t>(h - 1 - y) * w + x) * 3];  // BMP rows are bottom-up
+            p[0] = clamp((c + 516 * U + 128) >> 8);             // B
+            p[1] = clamp((c - 100 * U - 208 * V + 128) >> 8);   // G
+            p[2] = clamp((c + 409 * V + 128) >> 8);             // R
+        }
+    }
+    BITMAPFILEHEADER fh{};
+    BITMAPINFOHEADER ih{};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(ih);
+    fh.bfSize = fh.bfOffBits + static_cast<DWORD>(rgb.size());
+    ih.biSize = sizeof(ih);
+    ih.biWidth = w;
+    ih.biHeight = h;
+    ih.biPlanes = 1;
+    ih.biBitCount = 24;
+    ih.biCompression = BI_RGB;
+    FILE* f = _wfopen(path, L"wb");
+    if (!f) return false;
+    fwrite(&fh, sizeof(fh), 1, f);
+    fwrite(&ih, sizeof(ih), 1, f);
+    fwrite(rgb.data(), 1, rgb.size(), f);
+    fclose(f);
+    return true;
+}
+
 // Enumerates video capture devices like a meeting app does, then reads frames from the CamNexo one.
-static int Probe(const wchar_t* match) {
+static int Probe(const wchar_t* match, const wchar_t* dumpPath) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
 
@@ -242,6 +280,17 @@ static int Probe(const wchar_t* match) {
             DWORD len = 0;
             s->GetTotalLength(&len);
             wprintf(L"frame %d  ts=%lld ms  %lu bytes\n", frames, ts / 10000, len);
+            if (dumpPath && frames == 5 && len >= 1280 * 720 * 3 / 2) {
+                IMFMediaBuffer* mb = nullptr;
+                if (SUCCEEDED(s->ConvertToContiguousBuffer(&mb))) {
+                    BYTE* data = nullptr;
+                    if (SUCCEEDED(mb->Lock(&data, nullptr, nullptr))) {
+                        wprintf(DumpBmp(dumpPath, data, 1280, 720) ? L"saved frame to %s\n" : L"could not write %s\n", dumpPath);
+                        mb->Unlock();
+                    }
+                    mb->Release();
+                }
+            }
             s->Release();
             ++frames;
         } else if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
@@ -256,12 +305,14 @@ static int Probe(const wchar_t* match) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);  // the desktop app reads this output through a pipe
+    setvbuf(stderr, nullptr, _IONBF, 0);
     std::wstring cmd = argc > 1 ? argv[1] : L"";
     if (cmd == L"register") return Register();
     if (cmd == L"unregister") return Unregister();
     if (cmd == L"run") return Run(argc > 2 ? _wtoi(argv[2]) : 0);
     if (cmd == L"selftest") return SelfTest();
-    if (cmd == L"probe") return Probe(argc > 2 ? argv[2] : CAMNEXO_VCAM_NAME);
+    if (cmd == L"probe") return Probe(argc > 2 ? argv[2] : CAMNEXO_VCAM_NAME, argc > 3 ? argv[3] : nullptr);
     fwprintf(stderr, L"usage: camnexo_vcam register | unregister | run | selftest\n");
     return 2;
 }

@@ -13,12 +13,15 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 #include <atomic>
 #include <chrono>
 #include <deque>
 #include <mutex>
 #include <thread>
 
+#include "frame_pipe.h"
 #include "ids.h"
 
 using Microsoft::WRL::ChainInterfaces;
@@ -30,10 +33,18 @@ using Microsoft::WRL::ClassicCom;
 
 namespace {
 
-constexpr UINT32 kWidth = 1280;
-constexpr UINT32 kHeight = 720;
 constexpr UINT32 kFps = 30;
-constexpr UINT32 kFrameBytes = kWidth * kHeight * 3 / 2;
+
+// The sizes the camera offers to apps (all 16:9, NV12, 30 fps). An app picks one; the picture from
+// the phone is scaled to it. The default is what apps that do not choose get.
+struct FrameSize {
+    UINT32 w, h;
+};
+constexpr FrameSize kSizes[] = {{640, 360}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+constexpr size_t kSizeCount = sizeof(kSizes) / sizeof(kSizes[0]);
+constexpr size_t kDefaultSize = 1;  // 1280x720
+
+constexpr size_t NV12Bytes(UINT32 w, UINT32 h) { return static_cast<size_t>(w) * h * 3 / 2; }
 
 // PINNAME_VIDEO_CAPTURE
 constexpr GUID kPinVideoCapture =
@@ -78,45 +89,163 @@ void Log(const wchar_t* fmt, ...) {
 }
 
 // Eight colour bars that rotate every half second, plus a moving white box so motion is obvious.
-void FillNv12(BYTE* dst, UINT64 frame) {
+// Shown when no phone is streaming.
+void FillNv12(BYTE* dst, UINT64 frame, UINT32 width, UINT32 height) {
     static const BYTE Y[8] = {235, 210, 170, 145, 106, 81, 41, 16};
     static const BYTE U[8] = {128, 16, 166, 54, 202, 90, 240, 128};
     static const BYTE V[8] = {128, 146, 16, 34, 222, 240, 110, 128};
     const UINT shift = static_cast<UINT>((frame / 15) % 8);
 
     BYTE* yPlane = dst;
-    for (UINT32 y = 0; y < kHeight; ++y) {
-        for (UINT32 x = 0; x < kWidth; ++x) {
-            yPlane[y * kWidth + x] = Y[(x * 8 / kWidth + shift) % 8];
+    for (UINT32 y = 0; y < height; ++y) {
+        for (UINT32 x = 0; x < width; ++x) {
+            yPlane[static_cast<size_t>(y) * width + x] = Y[(x * 8 / width + shift) % 8];
         }
     }
-    BYTE* uvPlane = dst + kWidth * kHeight;
-    for (UINT32 y = 0; y < kHeight / 2; ++y) {
-        for (UINT32 x = 0; x < kWidth / 2; ++x) {
-            const UINT bar = (x * 2 * 8 / kWidth + shift) % 8;
-            uvPlane[y * kWidth + x * 2] = U[bar];
-            uvPlane[y * kWidth + x * 2 + 1] = V[bar];
+    BYTE* uvPlane = dst + static_cast<size_t>(width) * height;
+    for (UINT32 y = 0; y < height / 2; ++y) {
+        for (UINT32 x = 0; x < width / 2; ++x) {
+            const UINT bar = (x * 2 * 8 / width + shift) % 8;
+            uvPlane[static_cast<size_t>(y) * width + x * 2] = U[bar];
+            uvPlane[static_cast<size_t>(y) * width + x * 2 + 1] = V[bar];
         }
     }
 
-    const UINT32 box = 96;
-    const UINT32 bx = static_cast<UINT32>((frame * 8) % (kWidth - box)) & ~1u;
-    const UINT32 by = (kHeight / 2 - box / 2) & ~1u;
+    const UINT32 box = height / 8;
+    const UINT32 bx = static_cast<UINT32>((frame * 8) % (width - box)) & ~1u;
+    const UINT32 by = (height / 2 - box / 2) & ~1u;
     for (UINT32 y = by; y < by + box; ++y) {
-        for (UINT32 x = bx; x < bx + box; ++x) yPlane[y * kWidth + x] = 235;
+        for (UINT32 x = bx; x < bx + box; ++x) yPlane[static_cast<size_t>(y) * width + x] = 235;
     }
     for (UINT32 y = by / 2; y < (by + box) / 2; ++y) {
         for (UINT32 x = bx; x < bx + box; x += 2) {
-            uvPlane[y * kWidth + x] = 128;
-            uvPlane[y * kWidth + x + 1] = 128;
+            uvPlane[static_cast<size_t>(y) * width + x] = 128;
+            uvPlane[static_cast<size_t>(y) * width + x + 1] = 128;
         }
     }
 }
+
+// Scales an NV12 picture to another size (nearest neighbour), keeping the aspect ratio and filling
+// the rest with black. The pictures from the phone are 16:9 like every size offered, so normally
+// it fills the frame exactly. `xmap` is scratch space reused between calls.
+void ScaleNv12(const BYTE* src, UINT32 sw, UINT32 sh, BYTE* dst, UINT32 dw, UINT32 dh, std::vector<UINT32>& xmap) {
+    if (sw == dw && sh == dh) {
+        memcpy(dst, src, NV12Bytes(dw, dh));
+        return;
+    }
+    const double s = std::min(static_cast<double>(dw) / sw, static_cast<double>(dh) / sh);
+    const UINT32 fw = static_cast<UINT32>(sw * s) & ~1u, fh = static_cast<UINT32>(sh * s) & ~1u;
+    const UINT32 ox = ((dw - fw) / 2) & ~1u, oy = ((dh - fh) / 2) & ~1u;
+    if (fw < 2 || fh < 2) return;
+    if (fw != dw || fh != dh) {  // bars around the picture
+        memset(dst, 16, static_cast<size_t>(dw) * dh);
+        memset(dst + static_cast<size_t>(dw) * dh, 128, static_cast<size_t>(dw) * dh / 2);
+    }
+    xmap.resize(fw);
+    for (UINT32 x = 0; x < fw; ++x) xmap[x] = std::min<UINT32>(sw - 1, static_cast<UINT32>(x / s));
+
+    const BYTE* srcUv = src + static_cast<size_t>(sw) * sh;
+    BYTE* dstUv = dst + static_cast<size_t>(dw) * dh;
+    for (UINT32 y = 0; y < fh; ++y) {
+        const UINT32 sy = std::min<UINT32>(sh - 1, static_cast<UINT32>(y / s));
+        const BYTE* row = src + static_cast<size_t>(sy) * sw;
+        BYTE* out = dst + static_cast<size_t>(oy + y) * dw + ox;
+        for (UINT32 x = 0; x < fw; ++x) out[x] = row[xmap[x]];
+    }
+    for (UINT32 y = 0; y < fh / 2; ++y) {
+        const UINT32 sy = std::min<UINT32>(sh - 1, static_cast<UINT32>((y * 2) / s)) / 2;
+        const BYTE* row = srcUv + static_cast<size_t>(sy) * sw;
+        BYTE* out = dstUv + static_cast<size_t>(oy / 2 + y) * dw + ox;
+        for (UINT32 x = 0; x < fw / 2; ++x) {
+            const BYTE* px = row + (xmap[x * 2] & ~1u);
+            out[x * 2] = px[0];
+            out[x * 2 + 1] = px[1];
+        }
+    }
+}
+
+// Reads decoded NV12 frames from the receiver's named pipe and keeps the newest one.
+// CopyLatest() fails when no phone is streaming, and the caller falls back to the test pattern.
+class FramePipeReader {
+public:
+    void Start() {
+        if (_running.exchange(true)) return;
+        _thread = std::thread([this] { Loop(); });
+    }
+
+    void Stop() {
+        if (!_running.exchange(false)) return;
+        if (_thread.joinable()) {
+            CancelSynchronousIo(_thread.native_handle());  // wake a blocked ReadFile
+            _thread.join();
+        }
+    }
+
+    // Copies the newest picture into `dst` (a dw x dh NV12 buffer), scaled if the sizes differ.
+    bool CopyLatest(BYTE* dst, UINT32 dw, UINT32 dh) {
+        std::lock_guard<std::mutex> l(_m);
+        if (_fw == 0 || _frame.size() != NV12Bytes(_fw, _fh)) return false;
+        if (GetTickCount64() - _tick > 1000) return false;  // stale: the phone went away
+        ScaleNv12(_frame.data(), _fw, _fh, dst, dw, dh, _xmap);
+        return true;
+    }
+
+private:
+    static bool ReadAll(HANDLE h, void* buf, size_t n) {
+        BYTE* p = static_cast<BYTE*>(buf);
+        while (n) {
+            DWORD got = 0;
+            if (!ReadFile(h, p, static_cast<DWORD>(n), &got, nullptr) || got == 0) return false;
+            p += got;
+            n -= got;
+        }
+        return true;
+    }
+
+    void Loop();
+
+    std::atomic<bool> _running{false};
+    std::thread _thread;
+    std::mutex _m;
+    std::vector<BYTE> _frame;
+    std::vector<UINT32> _xmap;
+    UINT32 _fw = 0, _fh = 0;  // size of _frame
+    ULONGLONG _tick = 0;
+};
 
 void LogGuid(const wchar_t* what, REFGUID g, HRESULT hr) {
     wchar_t s[64] = L"?";
     StringFromGUID2(g, s, 64);
     Log(L"%s %s -> 0x%08lx\n", what, s, hr);
+}
+
+void FramePipeReader::Loop() {
+    std::vector<BYTE> tmp;
+    while (_running) {
+        HANDLE h = CreateFileW(CAMNEXO_FRAME_PIPE, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            Sleep(500);
+            continue;
+        }
+        Log(L"frame pipe connected\n");
+        while (_running) {
+            FramePipeHeader hd;
+            if (!ReadAll(h, &hd, sizeof(hd)) || hd.magic != kFramePipeMagic) break;
+            // The picture can be any even size up to 4K; reject anything else rather than trust it.
+            if (hd.width < 2 || hd.height < 2 || hd.width > kMaxFrameWidth || hd.height > kMaxFrameHeight ||
+                (hd.width & 1) || (hd.height & 1))
+                break;
+            tmp.resize(NV12Bytes(hd.width, hd.height));
+            if (!ReadAll(h, tmp.data(), tmp.size())) break;
+            std::lock_guard<std::mutex> l(_m);
+            _frame.swap(tmp);  // tmp is resized again on the next frame
+            _fw = hd.width;
+            _fh = hd.height;
+            _tick = GetTickCount64();
+        }
+        CloseHandle(h);
+        Log(L"frame pipe lost\n");
+    }
 }
 
 class CamNexoSource;
@@ -217,6 +346,19 @@ public:
         return S_OK;
     }
 
+    /// The size the app selected for the stream; used for every frame until it changes it again.
+    void SetOutputSize(UINT32 w, UINT32 h) {
+        for (const FrameSize& s : kSizes) {
+            if (s.w == w && s.h == h) {
+                if (_outW != w || _outH != h) Log(L"stream output size %ux%u\n", w, h);
+                _outW = w;
+                _outH = h;
+                return;
+            }
+        }
+        Log(L"stream: ignoring unknown output size %ux%u\n", w, h);
+    }
+
     HRESULT Start() {
         {
             std::lock_guard<std::mutex> l(_lock);
@@ -228,6 +370,7 @@ public:
             _startTime = MFGetSystemTime();
             _queue->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
         }
+        _pipe.Start();
         _thread = std::thread([this] { Run(); });
         return S_OK;
     }
@@ -241,6 +384,7 @@ public:
         }
         Log(L"stream Stop\n");
         if (_thread.joinable()) _thread.join();
+        _pipe.Stop();
         std::lock_guard<std::mutex> l(_lock);
         _tokens.clear();
         if (_queue) _queue->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr);
@@ -277,13 +421,21 @@ private:
                 ts = MFGetSystemTime();
             }
 
+            // The size the app chose for this stream (see SetOutputSize).
+            const UINT32 fw = _outW, fh = _outH;
+            const DWORD frameBytes = static_cast<DWORD>(NV12Bytes(fw, fh));
             ComPtr<IMFMediaBuffer> buffer;
-            if (FAILED(MFCreateMemoryBuffer(kFrameBytes, &buffer))) continue;
+            if (FAILED(MFCreateMemoryBuffer(frameBytes, &buffer))) continue;
             BYTE* data = nullptr;
             if (FAILED(buffer->Lock(&data, nullptr, nullptr))) continue;
-            FillNv12(data, frame);
+            const bool live = _pipe.CopyLatest(data, fw, fh);
+            if (!live) FillNv12(data, frame, fw, fh);
+            if (live != _wasLive) {
+                _wasLive = live;
+                Log(live ? L"stream: showing phone frames\n" : L"stream: showing test pattern\n");
+            }
             buffer->Unlock();
-            buffer->SetCurrentLength(kFrameBytes);
+            buffer->SetCurrentLength(frameBytes);
 
             ComPtr<IMFSample> sample;
             if (FAILED(MFCreateSample(&sample))) continue;
@@ -302,6 +454,10 @@ private:
     ComPtr<IMFMediaSource> _source;
     ComPtr<IMFStreamDescriptor> _descriptor;
     std::deque<ComPtr<IUnknown>> _tokens;
+    FramePipeReader _pipe;
+    std::atomic<UINT32> _outW{kSizes[kDefaultSize].w};
+    std::atomic<UINT32> _outH{kSizes[kDefaultSize].h};
+    bool _wasLive = false;
     std::thread _thread;
     bool _running = false;
     UINT64 _frame = 0;
@@ -342,22 +498,29 @@ public:
         profiles->AddProfile(profile.Get());
         _attributes->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, profiles.Get());
 
-        ComPtr<IMFMediaType> type;
-        hr = MFCreateMediaType(&type);
-        if (FAILED(hr)) return hr;
-        type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, kWidth, kHeight);
-        MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFps, 1);
-        MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-        type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-        type->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
-        type->SetUINT32(MF_MT_DEFAULT_STRIDE, kWidth);
-        type->SetUINT32(MF_MT_SAMPLE_SIZE, kFrameBytes);
+        // One media type per offered size; the app picks one.
+        ComPtr<IMFMediaType> types[kSizeCount];
+        IMFMediaType* raw[kSizeCount];
+        for (size_t i = 0; i < kSizeCount; ++i) {
+            const UINT32 w = kSizes[i].w, h = kSizes[i].h;
+            hr = MFCreateMediaType(&types[i]);
+            if (FAILED(hr)) return hr;
+            IMFMediaType* t = types[i].Get();
+            t->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            t->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+            MFSetAttributeSize(t, MF_MT_FRAME_SIZE, w, h);
+            MFSetAttributeRatio(t, MF_MT_FRAME_RATE, kFps, 1);
+            MFSetAttributeRatio(t, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            t->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            t->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+            t->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+            t->SetUINT32(MF_MT_DEFAULT_STRIDE, w);
+            t->SetUINT32(MF_MT_SAMPLE_SIZE, static_cast<UINT32>(NV12Bytes(w, h)));
+            raw[i] = t;
+        }
+        ComPtr<IMFMediaType> type = types[kDefaultSize];
 
-        IMFMediaType* types[] = {type.Get()};
-        hr = MFCreateStreamDescriptor(0, 1, types, &_descriptor);
+        hr = MFCreateStreamDescriptor(0, static_cast<DWORD>(kSizeCount), raw, &_descriptor);
         if (FAILED(hr)) return hr;
         _descriptor->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, kPinVideoCapture);
         _descriptor->SetUINT32(MF_DEVICESTREAM_STREAM_ID, 0);
@@ -420,6 +583,21 @@ public:
         if (timeFormat && *timeFormat != GUID_NULL) return MF_E_UNSUPPORTED_TIME_FORMAT;
         std::lock_guard<std::mutex> l(_lock);
         if (!_queue) return MF_E_SHUTDOWN;
+
+        // The app's chosen format is the current type on the descriptor it passes in.
+        if (pd) {
+            BOOL selected = FALSE;
+            ComPtr<IMFStreamDescriptor> sd;
+            ComPtr<IMFMediaTypeHandler> handler;
+            ComPtr<IMFMediaType> current;
+            UINT32 w = 0, h = 0;
+            if (SUCCEEDED(pd->GetStreamDescriptorByIndex(0, &selected, &sd)) &&
+                SUCCEEDED(sd->GetMediaTypeHandler(&handler)) && SUCCEEDED(handler->GetCurrentMediaType(&current)) &&
+                SUCCEEDED(MFGetAttributeSize(current.Get(), MF_MT_FRAME_SIZE, &w, &h))) {
+                _stream->SetOutputSize(w, h);
+            }
+        }
+
         // Order per the Frame Server custom media source doc: MESourceStarted, then MENewStream, then the
         // stream's own MEStreamStarted.
         PROPVARIANT pos;
@@ -464,8 +642,14 @@ public:
     STDMETHODIMP SetD3DManager(IUnknown*) override { Log(L"source SetD3DManager\n"); return S_OK; }
 
     // IMFMediaSource2
-    STDMETHODIMP SetMediaType(DWORD streamId, IMFMediaType*) override {
-        Log(L"source SetMediaType(%lu)\n", streamId);
+    STDMETHODIMP SetMediaType(DWORD streamId, IMFMediaType* type) override {
+        UINT32 w = 0, h = 0;
+        if (type && SUCCEEDED(MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &w, &h)) && _stream) {
+            Log(L"source SetMediaType(%lu) %ux%u\n", streamId, w, h);
+            _stream->SetOutputSize(w, h);
+        } else {
+            Log(L"source SetMediaType(%lu)\n", streamId);
+        }
         return S_OK;
     }
 

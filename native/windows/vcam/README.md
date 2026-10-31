@@ -33,7 +33,25 @@ Debug output from the source uses `OutputDebugString` (view with DebugView, "Cap
 | Teams | | |
 | OBS | | |
 
+## Phone to PC (development setup)
+
+1. `camnexo_vcam run` (keeps the "CamNexo" virtual camera alive; Enter removes it).
+2. `camnexo_receiver` (TCP :7878 -> H.264 decode -> frame pipe `\\.\pipe\camnexo-frames` -> virtual camera). It prints the addresses to enter in the phone app. Windows asks once to allow it through the firewall.
+3. Phone app: enter the PC address and tap Connect. For USB, run `adb reverse tcp:7878 tcp:7878` and use `127.0.0.1`.
+4. Pick "CamNexo" in the video app. With no phone connected the camera shows the colour-bar test pattern.
+
+Check the output without a video app: `camnexo_vcam probe CamNexo frame.bmp` saves one frame.
+
+Rotation: the phone follows how it is physically held and sends a clockwise rotation in every packet; the receiver rotates and fits the picture into 1280x720 (portrait gets black side bars, landscape fills the frame). Checked in portrait and landscape, including turning while streaming. Not checked: upside-down, back camera.
+
+`camnexo_receiver --snap frame.bmp` rewrites a BMP of the latest frame every 2 seconds, for checking the picture without a video app.
+
+Known limits of this slice: plain TCP (no encryption or pairing yet); fixed 1280x720 output; one phone at a time.
+
 ## What the Frame Server needed (lessons)
+
+- Never fail-fast the service by stopping it while apps (Teams, Camera) hold the camera: the Frame Server was killed by its watchdog repeatedly while testing. `Start-Service FrameServer` brings it back without admin.
+- A source DLL copy works without stopping the service whenever the service does not currently have the DLL loaded (`tasklist /m camnexo_vcam_source.dll`).
 
 - The registered CLSID must be an `IMFActivate`; `ActivateObject` returns the media source (otherwise `E_NOINTERFACE`).
 - Source also implements `IMFMediaSource2`, `IMFGetService`, `IKsControl`, `IMFSampleAllocatorControl`; stream implements `IMFMediaStream2`.
