@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["camnexo-proto"]
+# camnexo-net, camnexo-media and camnexo-ffi are added to members as they get code.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"

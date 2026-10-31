@@ -1,0 +1,13 @@
+target/
+build/
+.dart_tool/
+.flutter-plugins*
+*.iml
+.idea/
+.gradle/
+local.properties
+Pods/
+*.keystore
+*.jks
+*.pfx
+.env

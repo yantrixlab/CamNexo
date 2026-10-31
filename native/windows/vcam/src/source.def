@@ -1,0 +1,4 @@
+LIBRARY camnexo_vcam_source
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow   PRIVATE
