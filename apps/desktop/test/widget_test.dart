@@ -51,7 +51,10 @@ void main() {
     await tester.tap(find.text('Portrait'));
     await tester.pump();
     expect(controller.orientation, OrientationMode.portrait);
-    expect(controller.layoutName, 'Portrait band');
+    expect(controller.layoutName, 'Auto'); // the shape is separate from the layout
+    await tester.tap(find.text('Auto').first);
+    await tester.pump();
+    expect(controller.orientation, OrientationMode.auto);
   });
 
   testWidgets('connecting phones fills the Cameras panel and the layout follows the count', (tester) async {
@@ -219,6 +222,26 @@ void main() {
       // Hidden cameras leave their cell empty rather than reappearing.
       c.setVisible(c.sourceById(3)!, false);
       expect(c.resolvedCells().map((r) => r.camera?.id), [null, 1, 2]);
+    });
+
+    test('a fixed shape is the largest 16:9 or 9:16 frame centred in the cell', () {
+      // Whole frame: landscape fills it, portrait is a narrow band in the middle.
+      expect(fixedShape(const Rect.fromLTWH(0, 0, 1, 1), landscape: true), const Rect.fromLTWH(0, 0, 1, 1));
+      final band = fixedShape(const Rect.fromLTWH(0, 0, 1, 1), landscape: false);
+      expect(band.height, closeTo(1, 1e-9));
+      expect(band.width, closeTo(0.31640625, 1e-9));
+      expect(band.center.dx, closeTo(0.5, 1e-9));
+      // Left half (a tall cell): a landscape frame is half the height, centred vertically.
+      final land = fixedShape(const Rect.fromLTWH(0, 0, 0.5, 1), landscape: true);
+      expect(land.width, closeTo(0.5, 1e-9));
+      expect(land.height, closeTo(0.5, 1e-9));
+      expect(land.top, closeTo(0.25, 1e-9));
+      // Whatever the cell, the result keeps its shape in real pixels.
+      for (final cell in [const Rect.fromLTWH(0.1, 0.2, 0.3, 0.6), const Rect.fromLTWH(0, 0, 1, 0.2)]) {
+        final r = fixedShape(cell, landscape: true);
+        expect((r.width * 16) / (r.height * 9), closeTo(16 / 9, 1e-9));
+        expect(cell.contains(r.topLeft) && cell.inflate(1e-9).contains(r.bottomRight), isTrue);
+      }
     });
 
     test('the gap between cells keeps each cell inside the frame', () {

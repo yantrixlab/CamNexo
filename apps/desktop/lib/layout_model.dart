@@ -238,15 +238,7 @@ LayoutNode _chain(SplitAxis axis, List<LayoutNode> parts) {
 }
 
 final List<LayoutTemplate> layoutTemplates = [
-  LayoutTemplate('single', 'Single', 'One camera, the whole picture fitted', 1, () => _l(cover: false)),
-  LayoutTemplate('single-fill', 'Single, filled', 'One camera, cropped to fill the frame', 1, () => _l()),
-  LayoutTemplate(
-    'portrait',
-    'Portrait band',
-    'One camera in a narrow upright frame',
-    1,
-    () => _h(0.342, Leaf(empty: true), _h(0.316 / 0.658, _l(), Leaf(empty: true))),
-  ),
+  LayoutTemplate('single', 'Single', 'One camera in the whole frame', 1, () => _l(cover: false)),
   LayoutTemplate('side', 'Side by side', 'Two cameras next to each other', 2, () => _h(0.5, _l(), _l())),
   LayoutTemplate('stack', 'Stacked', 'Two cameras, one above the other', 2, () => _v(0.5, _l(), _l())),
   LayoutTemplate('main-right', 'Main + 2', 'One large camera and two small ones', 3,
@@ -291,4 +283,19 @@ Rect insetCell(Rect r, {required bool gap}) {
   // The frame is 16:9, so the same fraction is wider in x; scale it so the gap looks even.
   final gx = g * 9 / 16;
   return Rect.fromLTRB(r.left + gx, r.top + g, r.right - gx, r.bottom - g);
+}
+
+/// The largest 16:9 (or 9:16) frame that fits in the middle of a cell. [cell] and the result are
+/// fractions of the 16:9 output frame, so the shape is worked out in equal units first.
+Rect fixedShape(Rect cell, {required bool landscape}) {
+  final aspect = landscape ? 16 / 9 : 9 / 16;
+  final w = cell.width * 16, h = cell.height * 9;
+  var nw = w, nh = h;
+  if (w / h > aspect) {
+    nw = h * aspect;
+  } else {
+    nh = w / aspect;
+  }
+  final fw = nw / 16, fh = nh / 9;
+  return Rect.fromLTWH(cell.left + (cell.width - fw) / 2, cell.top + (cell.height - fh) / 2, fw, fh);
 }

@@ -288,19 +288,22 @@ class _HomeScreenState extends State<HomeScreen> {
             const Expanded(child: DragToMoveArea(child: SizedBox.expand())),
             // Quick controls for the one camera, when there is only one (the Cameras panel
             // has them for every camera).
-            if (single && !compact) ...[
-              ResolutionMenu(controller: c, source: c.primary, labels: labels),
+            if (!compact) ...[
+              if (single) ...[
+                ResolutionMenu(controller: c, source: c.primary, labels: labels),
+                const SizedBox(width: 6),
+              ],
+              PictureShapeControl(controller: c, labels: labels),
               const SizedBox(width: 6),
-              _orientationControl(labels),
-              const SizedBox(width: 6),
-              if (c.primary != null)
+              if (single && c.primary != null) ...[
                 _iconButton(
                   icon: Icons.flip,
                   tooltip: 'Turn the picture 180° (for a phone mounted upside down)',
                   selected: c.primary!.flip,
                   onPressed: () => c.toggleFlip(c.primary!),
                 ),
-              const SizedBox(width: 6),
+                const SizedBox(width: 6),
+              ],
             ],
             _layoutButton(),
             const SizedBox(width: 6),
@@ -425,76 +428,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _orientationControl(bool labels) {
-    Widget seg(OrientationMode mode, IconData icon, String label, String tip) {
-      final selected = c.orientation == mode;
-      return Tooltip(
-        message: tip,
-        waitDuration: const Duration(milliseconds: 400),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(7),
-          onTap: () => c.setOrientation(mode),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            padding: EdgeInsets.symmetric(horizontal: labels ? 9 : 7, vertical: 5),
-            decoration: BoxDecoration(
-              color: selected ? _brand : Colors.transparent,
-              borderRadius: BorderRadius.circular(7),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 15, color: selected ? Colors.white : Colors.white70),
-                if (labels) ...[
-                  const SizedBox(width: 5),
-                  Text(label,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: selected ? Colors.white : Colors.white70,
-                      )),
-                ],
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: _glass,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: _border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          seg(OrientationMode.auto, Icons.screen_rotation, 'Auto',
-              'Auto: the picture is always upright, and the frame follows how the phone is held'),
-          Container(
-            width: 1,
-            height: 16,
-            margin: EdgeInsets.symmetric(horizontal: labels ? 6 : 3),
-            color: _border,
-          ),
-          if (labels)
-            const Padding(
-              padding: EdgeInsets.only(right: 4),
-              child: Text('Fixed', style: TextStyle(fontSize: 11, color: Colors.white54)),
-            ),
-          seg(OrientationMode.landscape, Icons.crop_landscape, 'Landscape',
-              'Fixed landscape: always a wide frame with an upright picture, cropped to fill. '
-              'Turning the phone does not change it.'),
-          seg(OrientationMode.portrait, Icons.crop_portrait, 'Portrait',
-              'Fixed portrait: always a narrow upright frame, cropped to fill. '
-              'Turning the phone does not change it.'),
-        ],
       ),
     );
   }

@@ -64,6 +64,78 @@ class _ThumbPainter extends CustomPainter {
   bool shouldRepaint(_ThumbPainter old) => old.root != root || old.selected != selected;
 }
 
+/// Picture shape: Auto (each cell decides) or Fixed Landscape or Portrait (every camera keeps that
+/// shape inside its cell, whatever the layout or the way the phone is held).
+class PictureShapeControl extends StatelessWidget {
+  const PictureShapeControl({super.key, required this.controller, this.labels = true, this.expand = false});
+
+  final DesktopController controller;
+  final bool labels;
+
+  /// Fill the available width with three equal parts (used in the Layout panel).
+  final bool expand;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    Widget seg(OrientationMode mode, IconData icon, String label, String tip) {
+      final selected = c.orientation == mode;
+      final child = AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: EdgeInsets.symmetric(horizontal: labels || expand ? 9 : 7, vertical: expand ? 8 : 5),
+        decoration: BoxDecoration(
+          color: selected ? brandBlue : Colors.transparent,
+          borderRadius: BorderRadius.circular(7),
+        ),
+        child: Row(
+          mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 15, color: selected ? Colors.white : Colors.white70),
+            if (labels || expand) ...[
+              const SizedBox(width: 5),
+              Text(label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: selected ? Colors.white : Colors.white70,
+                  )),
+            ],
+          ],
+        ),
+      );
+      final button = Tooltip(
+        message: tip,
+        waitDuration: const Duration(milliseconds: 400),
+        child: InkWell(borderRadius: BorderRadius.circular(7), onTap: () => c.setOrientation(mode), child: child),
+      );
+      return expand ? Expanded(child: button) : button;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(color: glass, borderRadius: BorderRadius.circular(9), border: Border.all(color: glassBorder)),
+      child: Row(
+        mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+        children: [
+          seg(OrientationMode.auto, Icons.screen_rotation, 'Auto',
+              'Auto: every cell decides how its picture is shaped (Fill or Fit), so the picture follows the cell'),
+          Container(width: 1, height: 16, margin: EdgeInsets.symmetric(horizontal: labels || expand ? 6 : 3), color: glassBorder),
+          if (labels && !expand)
+            const Padding(
+              padding: EdgeInsets.only(right: 4),
+              child: Text('Fixed', style: TextStyle(fontSize: 11, color: Colors.white54)),
+            ),
+          seg(OrientationMode.landscape, Icons.crop_landscape, 'Landscape',
+              'Fixed landscape: every camera keeps a wide 16:9 frame, centred in its cell and cropped to fill it'),
+          seg(OrientationMode.portrait, Icons.crop_portrait, 'Portrait',
+              'Fixed portrait: every camera keeps a tall 9:16 frame, centred in its cell and cropped to fill it'),
+        ],
+      ),
+    );
+  }
+}
+
 /// The Layout menu: Auto, the ready-made templates and a way into the manual editor.
 class LayoutPicker extends StatelessWidget {
   const LayoutPicker({
@@ -132,6 +204,23 @@ class LayoutPicker extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          const Text('Picture shape', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          PictureShapeControl(controller: c, expand: true),
+          const SizedBox(height: 6),
+          Text(
+            switch (c.orientation) {
+              OrientationMode.auto => 'Auto: each camera fills or fits its own cell, so a narrow cell crops a wide picture.',
+              OrientationMode.landscape =>
+                'Fixed landscape: every camera keeps a wide 16:9 frame in its cell, however the phone is held.',
+              OrientationMode.portrait =>
+                'Fixed portrait: every camera keeps a tall 9:16 frame in its cell, however the phone is held.',
+            },
+            style: const TextStyle(fontSize: 11, color: Colors.white54, height: 1.3),
+          ),
+          const SizedBox(height: 12),
+          const Text('Layout', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,

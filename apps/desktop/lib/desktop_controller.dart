@@ -151,19 +151,18 @@ class DesktopController extends ChangeNotifier {
   LayoutNode layout = autoTemplateFor(0).build();
   int _autoCount = 0;
 
-  /// What the single-camera frame control shows, taken from the template in use.
-  OrientationMode get orientation => switch (templateId) {
-        'single-fill' => OrientationMode.landscape,
-        'portrait' => OrientationMode.portrait,
-        _ => OrientationMode.auto,
-      };
+  /// The shape every camera's picture keeps inside its cell.
+  ///   auto       each cell uses its own Fill or Fit setting, so the picture follows the cell.
+  ///   landscape  fixed: every picture is a wide 16:9 frame, centred in its cell and cropped to fill it.
+  ///   portrait   fixed: every picture is a tall 9:16 frame, centred in its cell and cropped to fill it.
+  /// Turning a phone or changing the layout never changes a fixed shape.
+  OrientationMode frameShape = OrientationMode.auto;
+
+  OrientationMode get orientation => frameShape;
 
   void setOrientation(OrientationMode mode) {
-    applyTemplate(templateById(switch (mode) {
-      OrientationMode.auto => 'single',
-      OrientationMode.landscape => 'single-fill',
-      OrientationMode.portrait => 'portrait',
-    })!);
+    frameShape = mode;
+    _layoutChanged();
   }
 
   /// Lets CamNexo choose the layout from the number of cameras.
@@ -253,9 +252,14 @@ class DesktopController extends ChangeNotifier {
     final gap = cells.length > 1;
     final parts = <String>[];
     for (final c in cells) {
-      final r = insetCell(c.rect, gap: gap);
+      var r = insetCell(c.rect, gap: gap);
+      var cover = c.leaf.cover;
+      if (frameShape != OrientationMode.auto) {
+        r = fixedShape(r, landscape: frameShape == OrientationMode.landscape);
+        cover = true; // a fixed frame is always filled
+      }
       parts.add('${c.camera?.id ?? -1} ${r.left.toStringAsFixed(4)} ${r.top.toStringAsFixed(4)} '
-          '${r.width.toStringAsFixed(4)} ${r.height.toStringAsFixed(4)} ${c.leaf.cover ? 1 : 0}');
+          '${r.width.toStringAsFixed(4)} ${r.height.toStringAsFixed(4)} ${cover ? 1 : 0}');
     }
     _send('layout ${cells.length} ${parts.join(' ')}');
   }
@@ -279,6 +283,11 @@ class DesktopController extends ChangeNotifier {
         ..addAll(((j['res'] as Map?) ?? const {}).cast<String, String>());
       layoutMode = LayoutMode.values.firstWhere((m) => m.name == j['mode'], orElse: () => LayoutMode.auto);
       templateId = j['template'] as String?;
+      frameShape = OrientationMode.values.firstWhere((m) => m.name == j['shape'], orElse: () => OrientationMode.auto);
+      if (layoutMode == LayoutMode.template && templateById(templateId) == null) {
+        layoutMode = LayoutMode.auto; // a template from an older version that no longer exists
+        templateId = null;
+      }
       final tree = j['layout'];
       if (layoutMode != LayoutMode.auto && tree is Map) {
         layout = LayoutNode.fromJson(tree.cast<String, Object?>());
@@ -305,6 +314,7 @@ class DesktopController extends ChangeNotifier {
             'mode': layoutMode.name,
             'template': templateId,
             'layout': layout.toJson(),
+            'shape': frameShape.name,
             'hidden': _hiddenKeys.toList(),
             'flip': _flipKeys.toList(),
             'res': _resolutionByKey,
