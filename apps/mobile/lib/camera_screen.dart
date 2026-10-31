@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'discovery_bridge.dart';
 import 'stream_bridge.dart';
@@ -23,6 +24,7 @@ const _defaultPort = 7878;
 const _hostPref = 'last_host';
 const _pcPref = 'last_pc';
 const _maxAutoRetries = 5;
+final _desktopDownloadUrl = Uri.parse('https://camnexo.yantrixlab.com/#download');
 
 class _CameraScreenState extends State<CameraScreen>
     with WidgetsBindingObserver {
@@ -998,6 +1000,19 @@ class _CameraScreenState extends State<CameraScreen>
     );
   }
 
+  /// Opens the download page for the Windows app in the browser.
+  Future<void> _openDesktopDownload() async {
+    var opened = false;
+    try {
+      opened = await launchUrl(_desktopDownloadUrl, mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Open camnexo.yantrixlab.com on your computer to download it.')),
+      );
+    }
+  }
+
   Widget _nearby(BuildContext context) {
     // One row per machine: leftover announcements of the same computer share its address.
     final byAddress = <String, DiscoveredPc>{};
@@ -1032,7 +1047,7 @@ class _CameraScreenState extends State<CameraScreen>
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Text(
-                          'Searching your Wi-Fi…',
+                          'Searching your Wi-Fi… Install the free CamNexo app on your Windows PC to connect.',
                           style: TextStyle(
                             color: Palette.textDim,
                             fontSize: 14,
@@ -1053,18 +1068,31 @@ class _CameraScreenState extends State<CameraScreen>
                   ],
                 ),
         ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton(
-            onPressed: () => setState(() => _showManual = !_showManual),
-            style: TextButton.styleFrom(
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(0, 36),
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          children: [
+            TextButton(
+              onPressed: () => setState(() => _showManual = !_showManual),
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 36),
+              ),
+              child: Text(
+                _showManual ? 'Hide manual address' : 'Enter address manually',
+              ),
             ),
-            child: Text(
-              _showManual ? 'Hide manual address' : 'Enter address manually',
+            TextButton.icon(
+              onPressed: _openDesktopDownload,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 36),
+              ),
+              icon: const Icon(Icons.desktop_windows_outlined, size: 18),
+              label: const Text('Get the Windows app'),
             ),
-          ),
+          ],
         ),
         AnimatedSize(
           duration: const Duration(milliseconds: 300),

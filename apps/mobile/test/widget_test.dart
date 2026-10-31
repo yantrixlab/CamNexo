@@ -47,7 +47,8 @@ void main() {
     expect(find.text('CamNexo'), findsOneWidget);
     expect(find.text('Not connected'), findsOneWidget);
     expect(find.text('Computers nearby'), findsOneWidget);
-    expect(find.text('Searching your Wi-Fi…'), findsOneWidget);
+    expect(find.textContaining('Searching your Wi-Fi…'), findsOneWidget);
+    expect(find.text('Get the Windows app'), findsOneWidget);
     // No camera plugin in unit tests: the preview falls back to its retry state.
     expect(find.text('Retry'), findsOneWidget);
 
