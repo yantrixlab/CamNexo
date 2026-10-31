@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'camera_screen.dart';
+import 'theme.dart';
 
 void main() {
   runApp(const CamNexoApp());
@@ -14,13 +15,7 @@ class CamNexoApp extends StatelessWidget {
     return MaterialApp(
       title: 'CamNexo',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2563EB),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: buildTheme(),
       home: const CameraScreen(),
     );
   }

@@ -44,6 +44,14 @@ kotlin {
     }
 }
 
+dependencies {
+    // Same CameraX version as the Flutter camera plugin, used directly by StreamController.
+    val cameraxVersion = "1.6.2"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+}
+
 flutter {
     source = "../.."
 }
