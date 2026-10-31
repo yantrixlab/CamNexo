@@ -63,7 +63,7 @@ The receiver can blur or replace the background behind a person and apply colour
 effect <src> <mode> <blur> <brightness> <contrast> <saturation> <warmth> <background file or ->
 ```
 
-`mode` is 0 none, 1 blur the background, 2 replace it with the picture in the file. `blur` is 0 to 100; the four colour values are -100 to 100. The person matte comes from the MODNet model run by ONNX Runtime (`onnxruntime.dll` and `models/modnet.onnx` next to the receiver), on a helper thread per camera. The receiver prints `[fx] background effects ready` or `[fx] background effects unavailable (reason)` at start; colour filters work either way.
+`mode` is 0 none, 1 blur the background, 2 replace it with the picture in the file. `blur` is 0 to 100; the four colour values are -100 to 100. The person matte comes from the MODNet model run by ONNX Runtime (`onnxruntime.dll` and `models/modnet.onnx`; the installer does not carry them: the desktop app downloads them once into `%LOCALAPPDATA%CamNexoeffects`, and a copy next to the receiver is used first by development builds), on a helper thread per camera. The receiver prints `[fx] background effects ready` or `[fx] background effects unavailable (reason)` at start (the reason is `not installed` when the files are missing), and again after the command `fxinit`, which makes it look for the files again; colour filters work either way.
 
 ## Pairing and security
 
