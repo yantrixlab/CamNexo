@@ -1,0 +1,6 @@
+{
+  "name": "camnexo-brand",
+  "private": true,
+  "description": "Generates app and website icons from the master logo",
+  "dependencies": { "sharp": "^0.34.0" }
+}
