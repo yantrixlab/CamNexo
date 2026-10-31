@@ -5,6 +5,9 @@ pub const HEADER_LEN: usize = 28;
 /// Upper bound on a single payload; rejects corrupt length fields before allocating.
 pub const MAX_PAYLOAD: u32 = 16 * 1024 * 1024;
 
+/// `flags` bit 0: the payload is codec configuration (H.264 SPS/PPS in Annex B), not a picture.
+pub const FLAG_CONFIG: u8 = 0b0000_0001;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PacketType {
@@ -40,6 +43,8 @@ pub struct Header {
     pub width: u16,
     pub height: u16,
     pub payload_len: u32,
+    /// Clockwise rotation (0, 90, 180 or 270) that makes the decoded picture upright.
+    pub rotation: u16,
 }
 
 impl Header {
@@ -54,7 +59,8 @@ impl Header {
         b[16..18].copy_from_slice(&self.width.to_le_bytes());
         b[18..20].copy_from_slice(&self.height.to_le_bytes());
         b[20..24].copy_from_slice(&self.payload_len.to_le_bytes());
-        // bytes 24..28 reserved for future use, zeroed
+        b[24..26].copy_from_slice(&self.rotation.to_le_bytes());
+        // bytes 26..28 reserved for future use, zeroed
         b
     }
 
@@ -90,6 +96,7 @@ impl Header {
             width: u16::from_le_bytes(b[16..18].try_into().unwrap()),
             height: u16::from_le_bytes(b[18..20].try_into().unwrap()),
             payload_len,
+            rotation: u16::from_le_bytes(b[24..26].try_into().unwrap()),
         })
     }
 }
@@ -109,6 +116,7 @@ mod tests {
             width: 1920,
             height: 1080,
             payload_len: 65_000,
+            rotation: 90,
         }
     }
 
@@ -116,6 +124,15 @@ mod tests {
     fn roundtrip() {
         let h = sample();
         assert_eq!(Header::decode(&h.encode()).unwrap(), h);
+    }
+
+    #[test]
+    fn config_flag_roundtrips() {
+        let mut h = sample();
+        h.packet_type = PacketType::Video;
+        h.flags = FLAG_CONFIG;
+        let back = Header::decode(&h.encode()).unwrap();
+        assert_eq!(back.flags & FLAG_CONFIG, FLAG_CONFIG);
     }
 
     #[test]

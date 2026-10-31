@@ -15,9 +15,18 @@ Implemented in `core/camnexo-proto`. All integers little-endian.
 | 16 | 2 | width |
 | 18 | 2 | height |
 | 20 | 4 | payload_len (max 16 MiB) |
-| 24 | 4 | reserved (zero) |
+| 24 | 2 | rotation: clockwise degrees (0, 90, 180, 270) that make the decoded picture upright |
+| 26 | 2 | reserved (zero) |
 
 The header is followed by `payload_len` bytes (one encoded access unit, or a control message).
+
+`flags` bit 0 (`FLAG_CONFIG`): the payload is H.264 SPS/PPS in Annex B form. The sender emits it once after the encoder starts; the receiver prepends the latest config to every keyframe before decoding.
+
+Video payloads are Annex B H.264 (start codes), Baseline profile, no B-frames, 1 s keyframe interval. The sender drops frames when its queue is full and then waits for the next keyframe (requested immediately).
+
+## MVP connection (development)
+
+The phone connects to `PC_IP:7878` over plain TCP (or `127.0.0.1:7878` through `adb reverse tcp:7878 tcp:7878`). Encryption, QR pairing and mDNS discovery are not implemented yet.
 
 ## Transport
 
