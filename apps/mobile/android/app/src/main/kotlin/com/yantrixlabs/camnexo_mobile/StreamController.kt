@@ -9,6 +9,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
@@ -148,6 +149,9 @@ class StreamController private constructor(private val appContext: Context) {
                 s.sendBufferSize = 512 * 1024
                 s.connect(InetSocketAddress(host, port), 4000)
                 socket = s
+                // Tell the computer which phone this is (shown in its camera list).
+                val phone = ("${Build.MANUFACTURER} ${Build.MODEL}").trim().replaceFirstChar { it.uppercase() }
+                enqueueControl(byteArrayOf(4) + phone.toByteArray(Charsets.UTF_8).take(60).toByteArray())
                 supportedSizes = querySupportedSizes(front)
                 Log.i(TAG, "Supported 16:9 sizes: ${supportedSizes.joinToString { "${it.width}x${it.height}" }}")
                 Thread { sendLoop(s) }.apply { isDaemon = true; start() }
