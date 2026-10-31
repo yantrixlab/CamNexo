@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CamNexo camera test</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, sans-serif; background: #0e1116; color: #e6e8eb; margin: 24px; }
+  video { width: 320px; border-radius: 8px; background: #000; display: block; margin: 12px 0; }
+  pre { background: #161b22; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>CamNexo camera test</h1>
+<p>Opens the camera named "CamNexo" the way a web app (Meet, Teams on the web) would, and measures it for 5 seconds.</p>
+<video id="v" autoplay muted playsinline></video>
+<pre id="result">running…</pre>
+<script>
+const out = (o) => { document.getElementById('result').textContent = JSON.stringify(o, null, 2); };
+
+async function run() {
+  const report = { stage: 'start' };
+  try {
+    // Labels are only visible after the first permission grant.
+    const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+    probe.getTracks().forEach((t) => t.stop());
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    report.cameras = devices.map((d) => d.label);
+    const cam = devices.find((d) => /camnexo/i.test(d.label));
+    if (!cam) { report.stage = 'CamNexo not in camera list'; out(report); document.title = 'DONE'; return; }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: cam.deviceId } },
+    });
+    const track = stream.getVideoTracks()[0];
+    const v = document.getElementById('v');
+    v.srcObject = stream;
+    await v.play();
+    report.chosen = track.label;
+    report.settings = track.getSettings();
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 18;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let frames = 0, prev = null, motion = 0, brightness = 0, samples = 0;
+    const t0 = performance.now();
+    await new Promise((resolve) => {
+      const tick = () => {
+        frames++;
+        ctx.drawImage(v, 0, 0, 32, 18);
+        const d = ctx.getImageData(0, 0, 32, 18).data;
+        let sum = 0, diff = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+          sum += l;
+          if (prev) diff += Math.abs(l - prev[i >> 2]);
+        }
+        if (!prev) prev = new Float32Array(d.length / 4);
+        for (let i = 0; i < d.length; i += 4) prev[i >> 2] = (d[i] + d[i + 1] + d[i + 2]) / 3;
+        brightness += sum / (d.length / 4);
+        motion += diff / (d.length / 4);
+        samples++;
+        if (performance.now() - t0 < 5000) v.requestVideoFrameCallback(tick); else resolve();
+      };
+      v.requestVideoFrameCallback(tick);
+    });
+    const secs = (performance.now() - t0) / 1000;
+    report.stage = 'ok';
+    report.video = { width: v.videoWidth, height: v.videoHeight };
+    report.measuredFps = +(frames / secs).toFixed(1);
+    report.meanBrightness0to255 = +(brightness / samples).toFixed(1);
+    report.meanFrameChange = +(motion / Math.max(1, samples - 1)).toFixed(2);
+    stream.getTracks().forEach((t) => t.stop());
+  } catch (e) {
+    report.stage = 'error';
+    report.error = String(e && e.name ? e.name + ': ' + e.message : e);
+  }
+  out(report);
+  document.title = 'DONE';
+}
+run();
+</script>
+</body>
+</html>
