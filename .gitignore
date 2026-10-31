@@ -16,3 +16,8 @@ Pods/
 .claude/
 web/
 *.exe
+
+# Android signing: never commit the upload key or its passwords
+**/key.properties
+*.jks
+*.keystore

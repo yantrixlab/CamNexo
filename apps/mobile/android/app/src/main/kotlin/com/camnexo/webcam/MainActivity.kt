@@ -1,4 +1,4 @@
-package com.yantrixlabs.camnexo_mobile
+package com.camnexo.webcam
 
 import android.Manifest
 import android.content.pm.PackageManager

@@ -1,4 +1,4 @@
-package com.yantrixlabs.camnexo_mobile
+package com.camnexo.webcam
 
 import android.content.Context
 import android.net.nsd.NsdManager

@@ -1,4 +1,4 @@
-package com.yantrixlabs.camnexo_mobile
+package com.camnexo.webcam
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -24,7 +24,7 @@ class StreamService : Service() {
     companion object {
         private const val CHANNEL_ID = "camnexo_stream"
         private const val NOTIFICATION_ID = 7878
-        private const val ACTION_STOP = "com.yantrixlabs.camnexo_mobile.STOP_STREAM"
+        private const val ACTION_STOP = "com.camnexo.webcam.STOP_STREAM"
 
         /** Starts the service. Must be called while the app is visible (an Android rule). */
         fun begin(context: Context) {
