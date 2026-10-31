@@ -11,25 +11,14 @@ void main() {
 
   setUpAll(() async {
     // Real font metrics: the default test font is much wider than Roboto and reports false overflows.
-    // The fonts ship inside the Flutter SDK: find them from FLUTTER_ROOT, or by walking up from the
-    // test runner's own location (FLUTTER_ROOT is not always set, for example on CI).
-    String? dir;
-    final root = Platform.environment['FLUTTER_ROOT'];
-    if (root != null && Directory('$root/bin/cache/artifacts/material_fonts').existsSync()) {
-      dir = '$root/bin/cache/artifacts/material_fonts';
+    // The fonts are kept in test/fonts so the result does not depend on the Flutter SDK's layout.
+    final loader = FontLoader('Roboto');
+    for (final name in ['roboto-regular.ttf', 'roboto-medium.ttf', 'roboto-bold.ttf']) {
+      final file = File('test/fonts/$name');
+      expect(file.existsSync(), isTrue, reason: 'missing test font $name');
+      loader.addFont(Future.value(ByteData.sublistView(file.readAsBytesSync())));
     }
-    for (var d = File(Platform.resolvedExecutable).parent; dir == null; d = d.parent) {
-      if (Directory('${d.path}/artifacts/material_fonts').existsSync()) dir = '${d.path}/artifacts/material_fonts';
-      if (d.parent.path == d.path) break;
-    }
-    if (dir != null) {
-      final loader = FontLoader('Roboto');
-      for (final name in ['roboto-regular.ttf', 'roboto-medium.ttf', 'roboto-bold.ttf']) {
-        final file = File('$dir/$name');
-        if (file.existsSync()) loader.addFont(Future.value(ByteData.sublistView(file.readAsBytesSync())));
-      }
-      await loader.load();
-    }
+    await loader.load();
   });
 
   setUp(() {
