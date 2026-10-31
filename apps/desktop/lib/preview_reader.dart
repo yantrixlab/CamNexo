@@ -4,13 +4,13 @@ import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-// The receiver's small preview stream: 640x360 RGBA frames, about 15 per second. Same pipe as
+// The receiver's small preview stream: 960x540 RGBA frames (the composed layout), about 15 per second. Same pipe as
 // \\.\pipe\camnexo-preview. Dart treats a leading "\\." as a network share and fails with
 // "network path not found", so use the equivalent \\?\ spelling.
 const _pipePath = r'\\?\pipe\camnexo-preview';
 const _magic = 0x46584E43; // "CNXF", must match native/windows/vcam/src/frame_pipe.h
-const _width = 640;
-const _height = 360;
+const _width = 960;
+const _height = 540;
 
 /// Shows the picture the virtual camera is sending. A background isolate reads the receiver's
 /// preview pipe and hands every frame over; the full-size picture never passes through here.

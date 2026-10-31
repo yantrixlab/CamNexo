@@ -6,14 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'desktop_controller.dart';
+import 'layout_widgets.dart';
 import 'preview_reader.dart';
 
-const _glass = Color(0xB3101418); // translucent dark panel over the picture
-const _border = Color(0x24FFFFFF);
-const _brand = Color(0xFF2563EB);
-
-/// Stands for "Auto" in the resolution menu (a menu entry needs a non-null value).
-const _autoResolution = Resolution(0, 0);
+const _glass = glass;
+const _border = glassBorder;
+const _brand = brandBlue;
 
 /// The whole window is the camera picture. Status and controls float on top of it as compact
 /// glass overlays that fade out while streaming and the mouse is idle.
@@ -34,7 +32,12 @@ class _HomeScreenState extends State<HomeScreen> {
   ui.Image? _image;
   DateTime _lastFrame = DateTime.fromMillisecondsSinceEpoch(0);
   bool _hudVisible = true;
-  bool _panelOpen = false;
+  bool _infoOpen = false;
+  bool _camerasOpen = false;
+  bool _layoutOpen = false;
+  bool _editing = false;
+
+  bool get _panelOpen => _infoOpen || _camerasOpen || _layoutOpen || _editing;
 
   DesktopController get c => widget.controller;
 
@@ -93,46 +96,161 @@ class _HomeScreenState extends State<HomeScreen> {
         onHover: (_) => _poke(),
         child: Listener(
           onPointerDown: (_) => _poke(),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 1. The picture, or the quiet waiting background.
-              if (picture)
-                RawImage(image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.medium)
-              else
-                const _WaitingBackground(),
-              if (!picture) Center(child: _waitingCard(context)),
+          child: LayoutBuilder(builder: (context, box) {
+            // Where the 16:9 frame sits inside the window (the picture is fitted, never stretched).
+            final fitted = applyBoxFit(BoxFit.contain, const Size(16, 9), box.biggest).destination;
+            final frame = Rect.fromLTWH(
+              (box.maxWidth - fitted.width) / 2,
+              (box.maxHeight - fitted.height) / 2,
+              fitted.width,
+              fitted.height,
+            );
+            final cells = c.resolvedCells();
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                // 1. The picture, or the quiet waiting background.
+                if (picture)
+                  RawImage(image: _image, fit: BoxFit.contain, filterQuality: FilterQuality.medium)
+                else
+                  const _WaitingBackground(),
+                if (!picture && !_editing) Center(child: _waitingCard(context)),
 
-              // 2. Notices (setup needed, errors).
-              Positioned(
-                top: 56,
-                left: 12,
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 200),
-                  opacity: _showHud ? 1 : 0,
-                  child: _notices(context),
+                // 2. Names on the cells, when several cameras share the frame.
+                if (picture && !_editing && cells.length > 1)
+                  for (final cell in cells)
+                    if (cell.camera != null)
+                      Positioned(
+                        left: frame.left + cell.rect.left * frame.width + 10,
+                        top: frame.top + cell.rect.top * frame.height + 10 + (cell.rect.top < 0.02 ? 38 : 0), // clear of the top bar
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 200),
+                          opacity: _showHud ? 1 : 0,
+                          child: _Pill(
+                            dot: cell.camera!.streaming ? Colors.greenAccent.shade400 : Colors.amber,
+                            text: cell.camera!.label,
+                          ),
+                        ),
+                      ),
+
+                // 3. The manual layout editor.
+                if (_editing) Positioned.fill(child: LayoutEditor(controller: c, picture: frame)),
+
+                // 4. Notices (setup needed, errors).
+                Positioned(
+                  top: 56,
+                  left: 12,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity: _showHud ? 1 : 0,
+                    child: _notices(context),
+                  ),
                 ),
-              ),
 
-              // 3. Details panel.
-              if (_panelOpen) Positioned(top: 52, right: 12, child: _detailsPanel(context)),
+                // 5. Panels, one at a time on the right.
+                if (_infoOpen) Positioned(top: 52, right: 12, child: _detailsPanel(context)),
+                if (_camerasOpen)
+                  Positioned(
+                    top: 52,
+                    right: 12,
+                    bottom: 56,
+                    child: CamerasPanel(controller: c, onClose: () => setState(() => _camerasOpen = false)),
+                  ),
+                if (_layoutOpen)
+                  Positioned(
+                    top: 52,
+                    right: 12,
+                    bottom: 56,
+                    child: LayoutPicker(
+                      controller: c,
+                      onClose: () => setState(() => _layoutOpen = false),
+                      onEdit: () => setState(() {
+                        _layoutOpen = false;
+                        _editing = true;
+                      }),
+                    ),
+                  ),
 
-              // 4. Top bar and bottom strip.
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: _fade(child: _topBar(context)),
-              ),
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: _fade(child: _bottomBar(context)),
-              ),
-            ],
-          ),
+                // 6. Top bar and bottom strip.
+                Positioned(top: 0, left: 0, right: 0, child: _fade(child: _topBar(context))),
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: _editing ? _editBar(context) : _fade(child: _bottomBar(context)),
+                ),
+              ],
+            );
+          }),
         ),
+      ),
+    );
+  }
+
+  /// Opens one of the right-hand panels and closes the others.
+  void _openPanel({bool info = false, bool cameras = false, bool layout = false}) {
+    setState(() {
+      _infoOpen = info && !_infoOpen;
+      _camerasOpen = cameras && !_camerasOpen;
+      _layoutOpen = layout && !_layoutOpen;
+    });
+  }
+
+  /// Shown instead of the status strip while editing the layout.
+  Widget _editBar(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: [Color(0xE6000000), Color(0x00000000)],
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+              decoration: BoxDecoration(
+                color: const Color(0xF2121820),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _border),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.dashboard_customize_outlined, size: 17, color: Color(0xFF93C5FD)),
+                  const SizedBox(width: 10),
+                  const Flexible(
+                    child: Text(
+                      'Editing layout. Drag the dividers, split a cell, or pick which camera goes where.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: Colors.white70),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: c.useAutoLayout,
+                    child: const Text('Use Auto', style: TextStyle(fontSize: 12)),
+                  ),
+                  const SizedBox(width: 4),
+                  FilledButton(
+                    onPressed: () => setState(() => _editing = false),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _brand,
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+                    ),
+                    child: const Text('Done', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -156,7 +274,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       child: LayoutBuilder(builder: (context, box) {
-        final labels = box.maxWidth >= 940;
+        final labels = box.maxWidth >= 1180;
+        final compact = box.maxWidth < 1000;
+        final single = c.sources.length <= 1;
         return Row(
           children: [
             const SizedBox(width: 12),
@@ -166,21 +286,30 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 12),
             _statusPill(),
             const Expanded(child: DragToMoveArea(child: SizedBox.expand())),
-            _resolutionMenu(labels),
+            // Quick controls for the one camera, when there is only one (the Cameras panel
+            // has them for every camera).
+            if (single && !compact) ...[
+              ResolutionMenu(controller: c, source: c.primary, labels: labels),
+              const SizedBox(width: 6),
+              _orientationControl(labels),
+              const SizedBox(width: 6),
+              if (c.primary != null)
+                _iconButton(
+                  icon: Icons.flip,
+                  tooltip: 'Turn the picture 180° (for a phone mounted upside down)',
+                  selected: c.primary!.flip,
+                  onPressed: () => c.toggleFlip(c.primary!),
+                ),
+              const SizedBox(width: 6),
+            ],
+            _layoutButton(),
             const SizedBox(width: 6),
-            _orientationControl(labels),
-            const SizedBox(width: 6),
-            _iconButton(
-              icon: Icons.flip,
-              tooltip: 'Turn the picture 180° (for a phone mounted upside down)',
-              selected: c.flip,
-              onPressed: c.toggleFlip,
-            ),
+            _camerasButton(),
             _iconButton(
               icon: Icons.info_outline,
               tooltip: 'Connection details',
-              selected: _panelOpen,
-              onPressed: () => setState(() => _panelOpen = !_panelOpen),
+              selected: _infoOpen,
+              onPressed: () => _openPanel(info: true),
             ),
             const SizedBox(width: 4),
             WindowCaptionButton.minimize(
@@ -227,100 +356,72 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Picks the picture size the phone captures and sends: Auto, or any size the phone reports.
-  /// The change applies at once; the phone rebuilds its camera and encoder without disconnecting.
-  Widget _resolutionMenu(bool labels) {
-    final available = c.resolutions.isNotEmpty;
-    final current = c.currentResolution;
-    final label = !available
-        ? 'Resolution'
-        : c.resolutionAuto
-            ? (labels ? 'Auto · ${current?.shortName ?? ''}' : 'Auto')
-            : (current?.shortName ?? 'Resolution');
-
-    PopupMenuItem<Resolution> item(Resolution value, Widget child, bool selected) => PopupMenuItem<Resolution>(
-          value: value,
-          height: 38,
-          child: Row(
-            children: [
-              SizedBox(
-                width: 18,
-                child: selected ? const Icon(Icons.check, size: 16, color: Color(0xFF60A5FA)) : null,
-              ),
-              const SizedBox(width: 6),
-              Expanded(child: child),
-            ],
-          ),
-        );
-
+  /// Opens the Layout menu: Auto, templates and the manual editor.
+  Widget _layoutButton() {
+    final open = _layoutOpen;
     return Tooltip(
-      message: available ? 'Picture size (applies instantly)' : 'Connect a phone to choose a size',
+      message: 'How several cameras share the frame',
       waitDuration: const Duration(milliseconds: 400),
-      child: PopupMenuButton<Resolution>(
-        enabled: available,
-        tooltip: '',
-        position: PopupMenuPosition.under,
-        offset: const Offset(0, 6),
-        color: const Color(0xF2141A22),
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: _border),
-        ),
-        constraints: const BoxConstraints(minWidth: 250),
-        onSelected: (r) => c.setResolution(r == _autoResolution ? null : r),
-        itemBuilder: (context) => [
-          item(
-            _autoResolution,
-            Row(
-              children: [
-                const Text('Auto', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    c.resolutionAuto && current != null ? 'now ${current.shortName}' : 'phone picks the size',
-                    style: const TextStyle(fontSize: 11.5, color: Colors.white54),
-                  ),
-                ),
-              ],
-            ),
-            c.resolutionAuto,
-          ),
-          const PopupMenuDivider(height: 8),
-          for (final r in c.resolutions)
-            item(
-              r,
-              Row(
-                children: [
-                  Text(r.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                  const Spacer(),
-                  Text(r.dimensions, style: const TextStyle(fontSize: 11.5, color: Colors.white54)),
-                ],
-              ),
-              !c.resolutionAuto && current == r,
-            ),
-        ],
+      child: InkWell(
+        borderRadius: BorderRadius.circular(9),
+        onTap: () => _openPanel(layout: true),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            color: _glass,
+            color: open ? _brand : _glass,
             borderRadius: BorderRadius.circular(9),
             border: Border.all(color: _border),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.high_quality_rounded, size: 15, color: available ? Colors.white70 : Colors.white30),
+              const Icon(Icons.grid_view_rounded, size: 15, color: Colors.white70),
               const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: available ? Colors.white : Colors.white38,
+              const Text('Layout', style: TextStyle(fontSize: 12, color: Colors.white54)),
+              const SizedBox(width: 6),
+              Text(c.layoutName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              const Icon(Icons.arrow_drop_down, size: 18, color: Colors.white70),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Opens the Cameras panel; the number is how many phones are connected.
+  Widget _camerasButton() {
+    final open = _camerasOpen;
+    final count = c.sources.length;
+    return Tooltip(
+      message: 'Connected cameras',
+      waitDuration: const Duration(milliseconds: 400),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(9),
+        onTap: () => _openPanel(cameras: true),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: open ? _brand : _glass,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: _border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.videocam_outlined, size: 15, color: Colors.white70),
+              const SizedBox(width: 6),
+              const Text('Cameras', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: count > 0 ? const Color(0x3322C55E) : const Color(0x22FFFFFF),
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                child: Text('$count',
+                    style: TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.w700, color: count > 0 ? const Color(0xFF86EFAC) : Colors.white54)),
               ),
-              Icon(Icons.arrow_drop_down, size: 18, color: available ? Colors.white70 : Colors.white30),
             ],
           ),
         ),
@@ -442,11 +543,16 @@ class _HomeScreenState extends State<HomeScreen> {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (streaming)
+          if (streaming && c.sources.length == 1)
             _Pill(
               dot: Colors.greenAccent.shade400,
-              text: '${c.streamSize ?? '1280x720'} · ${c.fpsDecoded} fps · '
-                  '${(c.kbps / 1000).toStringAsFixed(1)} Mbps',
+              text: '${c.sources.first.streamSize ?? '1280x720'} · ${c.sources.first.fps} fps · '
+                  '${(c.sources.first.kbps / 1000).toStringAsFixed(1)} Mbps',
+            ),
+          if (c.sources.length > 1)
+            _Pill(
+              dot: Colors.greenAccent.shade400,
+              text: '${c.sources.length} cameras · ${(c.sources.fold<int>(0, (a, s) => a + s.kbps) / 1000).toStringAsFixed(1)} Mbps in total',
             ),
           _Pill(dot: cam.$2, text: cam.$1),
           _Pill(
@@ -493,7 +599,8 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 6),
           const Text(
             'Open CamNexo on your phone, on the same Wi-Fi. This computer shows up under '
-            '"Computers nearby". Tap Connect once, then it connects by itself.',
+            '"Computers nearby". Tap Connect once, then it connects by itself. '
+            'You can connect several phones; they share the frame.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12.5, color: Colors.white70, height: 1.35),
           ),
@@ -619,13 +726,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 PhoneState.connected => 'Connected',
                 PhoneState.waiting => 'Waiting',
               }, c.phone == PhoneState.streaming ? ok : Colors.amber),
-              if (c.phoneAddress != null) row('From', c.phoneAddress!),
-              if (c.currentResolution != null)
-                row('Resolution',
-                    '${c.currentResolution!.dimensions}${c.resolutionAuto ? ' (auto)' : ''}'),
-              if (c.phone == PhoneState.streaming) ...[
-                row('Rotation', '${c.rotation}°'),
-                row('Decode errors', '${c.decodeErrors}'),
+              row('Cameras', '${c.sources.length} connected, ${c.visibleSources.length} shown'),
+              for (final s in c.sources) ...[
+                const Divider(height: 14, color: Color(0x1FFFFFFF)),
+                row(s.label, s.address),
+                if (s.currentResolution != null)
+                  row('  Resolution', '${s.currentResolution!.dimensions}${s.resolutionAuto ? ' (auto)' : ''}'),
+                if (s.streaming) row('  Rotation · decode errors', '${s.rotation}° · ${s.decodeErrors}'),
               ],
               if (address != null) ...[
                 const Divider(height: 14, color: Color(0x1FFFFFFF)),
