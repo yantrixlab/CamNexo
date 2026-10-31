@@ -1,23 +1,25 @@
 # Code signing policy
 
-Windows releases of CamNexo are built from the source in this repository by a public GitHub Actions
-workflow, and are meant to be signed with a certificate provided by the
-[SignPath Foundation](https://signpath.org/) through [SignPath.io](https://about.signpath.io/).
+**Status:** the Windows installer and programs of CamNexo are **not code-signed yet**. Windows and your
+browser may warn that the publisher is unknown ("Windows protected your PC", "Suspicious download
+blocked"). That is because the file has no known publisher and few people have downloaded it, not
+because anything harmful was found. See the [support page](https://camnexo.yantrixlab.com/support.html)
+for how to run it.
 
-**Status:** the application to the SignPath Foundation is pending. Until it is approved, installers are
-not code-signed, and Windows and your browser may warn that the publisher is unknown. You can verify
-a download with the SHA-256 shown on <https://camnexo.yantrixlab.com>.
+We applied to the [SignPath Foundation](https://signpath.org/) for free signing of open source projects.
+The application was not approved for now, because the project does not yet have enough public
+visibility. We plan to apply again, or to use another signing service, as the project grows.
 
-## Roles
+## How to check a download
 
-- **Committers and reviewers:** the maintainers of this repository.
-- **Approvers:** the owners of the `yantrixlab` GitHub organization. Every release signing request is
-  approved by an owner before the file is signed.
+Windows releases are built from the source in this repository. The SHA-256 of each installer is
+shown on <https://camnexo.yantrixlab.com> (under "Verify download"). To compare it on Windows:
 
-## What is signed
+```
+certutil -hashfile CamNexo-Setup-0.3.0.exe SHA256
+```
 
-Only binaries built from this repository by the release workflow: the CamNexo desktop app, its helper
-programs, and the installer. Third-party files that are already signed by their publishers are not re-signed.
+The two values must be identical. If they are not, do not run the file.
 
 ## Privacy
 
