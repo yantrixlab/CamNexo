@@ -11,9 +11,18 @@ void main() {
 
   setUpAll(() async {
     // Real font metrics: the default test font is much wider than Roboto and reports false overflows.
+    // The fonts ship inside the Flutter SDK: find them from FLUTTER_ROOT, or by walking up from the
+    // test runner's own location (FLUTTER_ROOT is not always set, for example on CI).
+    String? dir;
     final root = Platform.environment['FLUTTER_ROOT'];
-    final dir = root == null ? null : '$root/bin/cache/artifacts/material_fonts';
-    if (dir != null && Directory(dir).existsSync()) {
+    if (root != null && Directory('$root/bin/cache/artifacts/material_fonts').existsSync()) {
+      dir = '$root/bin/cache/artifacts/material_fonts';
+    }
+    for (var d = File(Platform.resolvedExecutable).parent; dir == null; d = d.parent) {
+      if (Directory('${d.path}/artifacts/material_fonts').existsSync()) dir = '${d.path}/artifacts/material_fonts';
+      if (d.parent.path == d.path) break;
+    }
+    if (dir != null) {
       final loader = FontLoader('Roboto');
       for (final name in ['roboto-regular.ttf', 'roboto-medium.ttf', 'roboto-bold.ttf']) {
         final file = File('$dir/$name');
