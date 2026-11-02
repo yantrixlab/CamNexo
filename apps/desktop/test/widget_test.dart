@@ -227,6 +227,16 @@ void main() {
       c.debugHandleReceiverLine('[v4l2] ready /dev/video10 (1920x1080)');
       expect(c.camera, CameraState.ready);
     });
+
+    test('a camera that exists but cannot be opened is a problem with a reason, not a missing camera', () {
+      final c = DesktopController();
+      c.debugHandleReceiverLine('[v4l2] cannot open /dev/video10: Permission denied (your user needs access to video devices)');
+      expect(c.camera, CameraState.failed);
+      expect(c.error, contains('Permission denied'));
+      c.debugHandleReceiverLine('[v4l2] ready /dev/video10 (1920x1080)');
+      expect(c.camera, CameraState.ready);
+      expect(c.error, isNull);
+    });
   });
 
   group('layout model', () {

@@ -34,3 +34,13 @@ target_compile_options(camnexo_receiver PRIVATE -Wall -Wextra -Wno-unused-parame
 target_link_libraries(camnexo_receiver PRIVATE PkgConfig::FFMPEG PkgConfig::AVAHI Threads::Threads ${CMAKE_DL_LIBS})
 
 install(TARGETS camnexo_receiver RUNTIME DESTINATION lib/camnexo)
+
+# Packages carry their own FFmpeg libraries next to the receiver (build-ffmpeg.sh), in lib/. DT_RPATH (not
+# RUNPATH) is used so that libavcodec finds libavutil there too.
+option(CAMNEXO_BUNDLED_LIBS "Look for the FFmpeg libraries in lib/ next to the receiver" OFF)
+if(CAMNEXO_BUNDLED_LIBS)
+  set_target_properties(camnexo_receiver PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "\$ORIGIN/lib")
+  target_link_options(camnexo_receiver PRIVATE -Wl,--disable-new-dtags)
+endif()

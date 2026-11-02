@@ -623,6 +623,10 @@ class DesktopController extends ChangeNotifier {
         error = null;
       } else if (line.startsWith('[v4l2] no CamNexo camera')) {
         camera = CameraState.setupRequired;
+      } else if (line.startsWith('[v4l2] cannot open')) {
+        // The camera exists but this user cannot use it (usually no access to video devices).
+        camera = CameraState.failed;
+        error = 'Virtual camera: ${line.substring('[v4l2] '.length)}';
       } else if (line.startsWith('[v4l2] lost')) {
         camera = CameraState.starting;
       } else if (line.contains('receiver listening')) {

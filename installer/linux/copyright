@@ -1,0 +1,22 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: CamNexo
+Upstream-Contact: Yantrix Labs <yantrixlab@gmail.com>
+Source: https://github.com/yantrixlab/CamNexo
+
+Files: *
+Copyright: 2026 Yantrix Labs
+License: Apache-2.0
+ The full text is at /usr/share/common-licenses/Apache-2.0.
+
+Files: opt/camnexo/helpers/lib/*
+Copyright: the FFmpeg developers
+License: LGPL-2.1+
+ libavcodec and libavutil are FFmpeg 7.1.5, built without any GPL parts and with only the H.264
+ decoder enabled (see native/linux/build-ffmpeg.sh in the CamNexo source). They are loaded as shared
+ libraries from /opt/camnexo/helpers/lib and can be replaced by a build of the same version. The
+ source is https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz and the license text is
+ /opt/camnexo/helpers/lib/LICENSE-ffmpeg.txt (also /usr/share/common-licenses/LGPL-2.1).
+
+Files: the background effects files downloaded by the app (not part of this package)
+Copyright: Microsoft Corporation (ONNX Runtime, MIT); Zhanghan Ke et al. (MODNet, Apache-2.0)
+License: MIT and Apache-2.0

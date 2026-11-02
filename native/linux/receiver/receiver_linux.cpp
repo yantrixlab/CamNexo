@@ -369,10 +369,13 @@ void FitToOutput(const std::vector<BYTE>& nv12, uint32_t w, uint32_t h, std::vec
              static_cast<int>(g_outH));
 }
 
-// Opens the device and sets the output format. Returns the descriptor or -1.
-int OpenCamera(const std::string& path) {
+// Opens the device and sets the output format. Returns the descriptor, or -1 with `*err` set to the reason.
+int OpenCamera(const std::string& path, int* err) {
     const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        *err = errno;
+        return -1;
+    }
     v4l2_format fmt{};
     fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     fmt.fmt.pix.width = g_outW;
@@ -383,7 +386,7 @@ int OpenCamera(const std::string& path) {
     fmt.fmt.pix.sizeimage = g_outW * g_outH * 2;
     fmt.fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
-        std::fprintf(stderr, "[v4l2] %s does not take %ux%u YUYV (%d)\n", path.c_str(), g_outW, g_outH, errno);
+        *err = errno;
         close(fd);
         return -1;
     }
@@ -393,23 +396,31 @@ int OpenCamera(const std::string& path) {
 void CameraLoop() {
     int fd = -1;
     std::string path;
-    bool saidMissing = false;
+    std::string said;  // the last problem reported, so a repeating one is printed once
     uint64_t lastSeq = 0;
     std::vector<BYTE> local, fitted, yuyv;
     uint32_t w = 0, h = 0;
     for (;;) {
         if (fd < 0) {
             path = FindCamNexoDevice();
-            if (!path.empty()) fd = OpenCamera(path);
+            int err = 0;
+            if (!path.empty()) fd = OpenCamera(path, &err);
             if (fd < 0) {
-                if (!saidMissing) {
-                    std::printf("[v4l2] no CamNexo camera found (load the v4l2loopback module with card_label=CamNexo)\n");
-                    saidMissing = true;
+                std::string problem;
+                if (path.empty()) {
+                    problem = "[v4l2] no CamNexo camera found (load the v4l2loopback module with card_label=CamNexo)";
+                } else {
+                    problem = "[v4l2] cannot open " + path + ": " + std::strerror(err) +
+                              (err == EACCES ? " (your user needs access to video devices: add it to the video group, then log in again)" : "");
+                }
+                if (problem != said) {
+                    std::printf("%s\n", problem.c_str());
+                    said = problem;
                 }
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 continue;
             }
-            saidMissing = false;
+            said.clear();
             std::printf("[v4l2] ready %s (%ux%u)\n", path.c_str(), g_outW, g_outH);
             lastSeq = 0;
         }

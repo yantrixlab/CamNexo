@@ -151,3 +151,60 @@ jobs:
         with:
           name: camnexo-linux-desktop-bundle
           path: apps/desktop/build/linux/x64/release/bundle
+
+  linux-package:
+    name: Linux package (.deb)
+    runs-on: ubuntu-22.04   # the oldest supported system: the package then also runs on newer ones
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build clang pkg-config nasm xz-utils \
+            libgtk-3-dev liblzma-dev libavahi-client-dev xvfb
+      - uses: actions/cache@v4
+        with:
+          path: native/linux/third_party/ffmpeg/install
+          key: ffmpeg-lgpl-h264-${{ hashFiles('native/linux/build-ffmpeg.sh') }}-22.04
+      - name: Build the small LGPL FFmpeg
+        run: |
+          chmod +x tools/ci-run.sh native/linux/build-ffmpeg.sh installer/linux/build-deb.sh
+          tools/ci-run.sh "FFmpeg" native/linux/build-ffmpeg.sh
+      - name: Build the receiver (with the bundled FFmpeg)
+        run: |
+          export PKG_CONFIG_PATH="$PWD/native/linux/third_party/ffmpeg/install/lib/pkgconfig"
+          tools/ci-run.sh "Configure" cmake -S native/linux -B native/linux/build -DCMAKE_BUILD_TYPE=Release -DCAMNEXO_BUNDLED_LIBS=ON
+          tools/ci-run.sh "Build the receiver" cmake --build native/linux/build -j 4
+      - name: Build the desktop app
+        working-directory: apps/desktop
+        run: ../../tools/ci-run.sh "flutter build linux" flutter build linux --release
+      - name: Build the package
+        run: tools/ci-run.sh "build-deb" installer/linux/build-deb.sh 0.0.0-ci.${{ github.run_number }}
+      - name: Install the package and check it
+        run: |
+          sudo apt-get install -y ./installer/linux/output/camnexo_*_amd64.deb
+          ls /opt/camnexo /opt/camnexo/helpers /opt/camnexo/helpers/lib
+          ldd /opt/camnexo/helpers/camnexo_receiver | grep -E "avcodec|avutil"
+          ldd /opt/camnexo/helpers/camnexo_receiver | grep -E "avcodec|avutil" | grep -q "/opt/camnexo/helpers/lib" || { echo "::error title=Package::the receiver does not use the bundled FFmpeg"; exit 1; }
+          ldd /opt/camnexo/camnexo_desktop | grep "not found" && { echo "::error title=Package::missing libraries for the app"; exit 1; } || true
+          dpkg -L camnexo | head -40
+          test -x /usr/bin/camnexo
+          desktop-file-validate /usr/share/applications/camnexo.desktop || true
+      - name: Start the installed app under a virtual display
+        run: |
+          export HOME=/tmp/camnexo-home; mkdir -p "$HOME"
+          export CAMNEXO_SIMULATE=2 LIBGL_ALWAYS_SOFTWARE=1
+          (xvfb-run -a -s "-screen 0 1280x800x24" camnexo > /tmp/app.log 2>&1 &)
+          sleep 15
+          cat /tmp/app.log || true
+          pgrep -f /opt/camnexo/helpers/camnexo_receiver > /dev/null || { echo "::error title=App::the app did not start its receiver. $(tail -c 1500 /tmp/app.log | tr '\n' ' ')"; exit 1; }
+          ls -l /tmp/camnexo-*-preview.sock || { echo "::error title=App::the receiver has no preview socket"; exit 1; }
+          pkill -f camnexo_desktop || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camnexo-deb
+          path: installer/linux/output/*.deb

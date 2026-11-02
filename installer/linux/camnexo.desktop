@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CamNexo
+GenericName=Phone webcam
+Comment=Use your phone as a webcam for this computer
+Exec=camnexo
+Icon=camnexo
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=webcam;camera;phone;virtual camera;
+StartupWMClass=com.camnexo.desktop

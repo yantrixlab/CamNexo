@@ -7,6 +7,9 @@ sudo apt-get install -y v4l2loopback-dkms v4l-utils "linux-headers-$(uname -r)" 
 dkms status || true
 sudo modprobe v4l2loopback devices=1 video_nr=10 card_label=CamNexo exclusive_caps=1
 cat /sys/class/video4linux/video10/name
+# On a desktop the logged-in user gets access to video devices from the session; a CI runner has none.
+sudo chmod 666 /dev/video10
+ls -l /dev/video10
 
 cd native/linux/build
 (./camnexo_receiver --simulate 1 --no-discovery --port 7998 --preview-socket /tmp/camnexo-ci2.sock > /tmp/receiver2.log 2>&1 &)
