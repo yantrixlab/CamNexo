@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:camnexo_desktop/effects_pack.dart';
 
+const _archiveName = 'pack.tar.gz';
+
 /// Makes a small zip with the layout of the real pack (the real one is 27 MB), and serves it.
 Future<({EffectsPackSpec spec, HttpServer server, Directory work})> _serve({int status = 200, bool corrupt = false}) async {
   final work = Directory.systemTemp.createTempSync('camnexo_pack_test');
@@ -13,12 +15,20 @@ Future<({EffectsPackSpec spec, HttpServer server, Directory work})> _serve({int 
   File('${src.path}/onnxruntime.dll').writeAsBytesSync(List.filled(4000, 7));
   File('${src.path}/onnxruntime_providers_shared.dll').writeAsBytesSync(List.filled(500, 3));
   File('${src.path}/models/modnet.onnx').writeAsBytesSync(List.generate(9000, (i) => i % 251));
-  final zip = File('${work.path}/pack.zip');
-  final tar = '${Platform.environment['SystemRoot']}\\System32\\tar.exe';
-  final r = Process.runSync(tar, ['-a', '-c', '-f', zip.path, '-C', src.path, 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models']);
+  final zip = File('${work.path}/$_archiveName');
+  // Windows: a zip made with the bsdtar that ships with Windows. Linux: a .tar.gz, like the real pack.
+  final r = Platform.isWindows
+      ? Process.runSync('${Platform.environment['SystemRoot']}\\System32\\tar.exe',
+          ['-a', '-c', '-f', zip.path, '-C', src.path, 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models'])
+      : Process.runSync('tar', ['-czf', zip.path, '-C', src.path, 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models']);
   expect(r.exitCode, 0, reason: '${r.stderr}');
   final bytes = zip.readAsBytesSync();
-  final spec = EffectsPackSpec(url: 'unused', sha256: sha256.convert(bytes).toString(), size: bytes.length);
+  final spec = EffectsPackSpec(
+    url: 'unused',
+    sha256: sha256.convert(bytes).toString(),
+    size: bytes.length,
+    files: const ['onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models/modnet.onnx'],
+  );
 
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
   server.listen((req) async {
@@ -41,7 +51,7 @@ void main() {
       s.work.deleteSync(recursive: true);
     });
     final dir = '${s.work.path}/installed/effects';
-    final pack = EffectsPack(dir: dir, spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/pack.zip');
+    final pack = EffectsPack(dir: dir, spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/$_archiveName');
     expect(pack.installed, isFalse);
 
     var lastReceived = 0;
@@ -63,7 +73,7 @@ void main() {
       s.work.deleteSync(recursive: true);
     });
     final dir = '${s.work.path}/installed/effects';
-    final pack = EffectsPack(dir: dir, spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/pack.zip');
+    final pack = EffectsPack(dir: dir, spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/$_archiveName');
 
     await expectLater(pack.download(), throwsA(isA<EffectsPackException>().having((e) => e.message, 'message', contains('did not match'))));
     expect(pack.installed, isFalse);
@@ -77,7 +87,7 @@ void main() {
       await s.server.close(force: true);
       s.work.deleteSync(recursive: true);
     });
-    final pack = EffectsPack(dir: '${s.work.path}/installed/effects', spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/pack.zip');
+    final pack = EffectsPack(dir: '${s.work.path}/installed/effects', spec: s.spec, urlOverride: 'http://127.0.0.1:${s.server.port}/$_archiveName');
     await expectLater(pack.download(), throwsA(isA<EffectsPackException>().having((e) => e.message, 'message', contains('404'))));
   });
 
@@ -86,7 +96,7 @@ void main() {
     final port = s.server.port;
     await s.server.close(force: true); // nothing listens on this port any more
     addTearDown(() => s.work.deleteSync(recursive: true));
-    final pack = EffectsPack(dir: '${s.work.path}/installed/effects', spec: s.spec, urlOverride: 'http://127.0.0.1:$port/pack.zip');
+    final pack = EffectsPack(dir: '${s.work.path}/installed/effects', spec: s.spec, urlOverride: 'http://127.0.0.1:$port/$_archiveName');
     await expectLater(pack.download(), throwsA(isA<EffectsPackException>().having((e) => e.message, 'message', contains('Could not reach'))));
   });
 

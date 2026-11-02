@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -8,23 +9,35 @@ import 'package:crypto/crypto.dart';
 /// time someone turns Effects on, and keeps it in the user's own folder.
 ///
 /// The address, size and SHA-256 are fixed here, so only the file we published is ever installed.
-/// Build and publish a new pack with installer/windows/make-effects-pack.ps1.
+/// Build and publish a new pack with installer/windows/make-effects-pack.ps1 (Windows, a zip) or
+/// native/linux/make-effects-pack.sh (Linux, a .tar.gz).
 class EffectsPackSpec {
-  const EffectsPackSpec({required this.url, required this.sha256, required this.size});
+  const EffectsPackSpec({required this.url, required this.sha256, required this.size, this.files = _windowsFiles});
 
   final String url;
   final String sha256;
   final int size;
+
+  /// What the pack must contain once unpacked (paths relative to the pack folder).
+  final List<String> files;
 }
 
-const effectsPackSpec = EffectsPackSpec(
+const _windowsFiles = ['onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models/modnet.onnx'];
+
+const _windowsPack = EffectsPackSpec(
   url: 'https://camnexo.yantrixlab.com/downloads/effects/CamNexo-Effects-1.zip',
   sha256: 'dae3f0f94f943af5bd4dbd65f78e13c46a5ac0e7fb88eeefa5815620ac469b30',
   size: 28683814,
 );
 
-/// What the pack must contain once unpacked (paths relative to the pack folder).
-const effectsPackFiles = ['onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'models/modnet.onnx'];
+const _linuxPack = EffectsPackSpec(
+  url: 'https://camnexo.yantrixlab.com/downloads/effects/CamNexo-Effects-linux-x64-1.tar.gz',
+  sha256: '1aed33ab2afb8d4da9c4d41bf7b8ffe1eaa5aadfeb0ce48c95553f1338c1a9b9',
+  size: 31587861,
+  files: ['libonnxruntime.so', 'models/modnet.onnx'],
+);
+
+EffectsPackSpec get effectsPackSpec => Platform.isLinux ? _linuxPack : _windowsPack;
 
 /// A problem that can be shown to the person as it is.
 class EffectsPackException implements Exception {
@@ -42,11 +55,21 @@ class EffectsPack {
         spec = spec ?? effectsPackSpec,
         _url = urlOverride ?? Platform.environment['CAMNEXO_EFFECTS_URL'];
 
-  /// Where the pack lives: %LOCALAPPDATA%\CamNexo\effects. The receiver looks in the same place.
+  /// Where the pack lives: %LOCALAPPDATA%\CamNexo\effects on Windows, ~/.local/share/camnexo/effects on
+  /// Linux. The receiver looks in the same place.
   static String defaultDir() {
+    if (Platform.isLinux) {
+      final data = Platform.environment['XDG_DATA_HOME'];
+      if (data != null && data.isNotEmpty) return '$data/camnexo/effects';
+      final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+      return '$home/.local/share/camnexo/effects';
+    }
     final base = Platform.environment['LOCALAPPDATA'] ?? Directory.systemTemp.path;
     return '$base${Platform.pathSeparator}CamNexo${Platform.pathSeparator}effects';
   }
+
+  /// Packs are built for 64-bit Intel and AMD only so far.
+  static bool get supported => Abi.current() == Abi.windowsX64 || Abi.current() == Abi.linuxX64;
 
   final String dir;
   final EffectsPackSpec spec;
@@ -59,7 +82,7 @@ class EffectsPack {
 
   String _path(String relative) => '$dir${Platform.pathSeparator}${relative.replaceAll('/', Platform.pathSeparator)}';
 
-  bool get installed => effectsPackFiles.every((f) => File(_path(f)).existsSync());
+  bool get installed => spec.files.every((f) => File(_path(f)).existsSync());
 
   /// Stops a download in progress; [download] then throws.
   void cancel() {
@@ -72,7 +95,8 @@ class EffectsPack {
   Future<void> download({void Function(int received, int total)? onProgress, void Function()? onInstalling}) async {
     _cancelled = false;
     final work = Directory('$dir.download');
-    final zip = File('${work.path}${Platform.pathSeparator}pack.zip');
+    final gzip = (_url ?? spec.url).endsWith('.gz');
+    final zip = File('${work.path}${Platform.pathSeparator}${gzip ? 'pack.tar.gz' : 'pack.zip'}');
     final unpacked = Directory('${work.path}${Platform.pathSeparator}files');
     try {
       if (work.existsSync()) work.deleteSync(recursive: true);
@@ -80,11 +104,12 @@ class EffectsPack {
       await _fetch(zip, onProgress);
       onInstalling?.call();
       unpacked.createSync();
-      // tar.exe (bsdtar) is part of Windows 10 and later, and refuses paths that leave the folder.
-      final r = await Process.run('${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\tar.exe',
-          ['-xf', zip.path, '-C', unpacked.path]);
+      // tar.exe (bsdtar) is part of Windows 10 and later; tar is on every Linux. Both refuse paths that
+      // leave the folder.
+      final tar = Platform.isWindows ? '${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\tar.exe' : 'tar';
+      final r = await Process.run(tar, [gzip ? '-xzf' : '-xf', zip.path, '-C', unpacked.path]);
       if (r.exitCode != 0) throw EffectsPackException('The download could not be unpacked. ${r.stderr}'.trim());
-      for (final f in effectsPackFiles) {
+      for (final f in spec.files) {
         if (!File('${unpacked.path}${Platform.pathSeparator}${f.replaceAll('/', Platform.pathSeparator)}').existsSync()) {
           throw EffectsPackException('The download is incomplete ($f is missing).');
         }

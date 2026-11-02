@@ -215,6 +215,20 @@ void main() {
     });
   });
 
+  group('virtual camera on Linux', () {
+    test('the receiver reports the v4l2loopback camera, and the setup card follows it', () {
+      final c = DesktopController();
+      c.debugHandleReceiverLine('[v4l2] no CamNexo camera found (load the v4l2loopback module with card_label=CamNexo)');
+      expect(c.camera, CameraState.setupRequired);
+      c.debugHandleReceiverLine('[v4l2] ready /dev/video10 (1920x1080)');
+      expect(c.camera, CameraState.ready);
+      c.debugHandleReceiverLine('[v4l2] lost /dev/video10 (19)');
+      expect(c.camera, CameraState.starting);
+      c.debugHandleReceiverLine('[v4l2] ready /dev/video10 (1920x1080)');
+      expect(c.camera, CameraState.ready);
+    });
+  });
+
   group('layout model', () {
     test('Auto picks a template for the number of cameras', () {
       expect(placedLeaves(autoTemplateFor(0).build()).length, 1);

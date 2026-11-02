@@ -10,6 +10,7 @@ import 'camera_source.dart';
 import 'effects_model.dart';
 import 'effects_pack.dart';
 import 'layout_model.dart';
+import 'platform_info.dart';
 
 export 'camera_source.dart';
 
@@ -47,8 +48,8 @@ class ResolvedCell {
 }
 
 const _clsid = '{5E6B7C2A-3F0D-4B7A-9C41-2D8E6A1F0B53}';
-const _receiverExe = 'camnexo_receiver.exe';
-const _cameraExe = 'camnexo_vcam.exe';
+final _receiverExe = receiverExeName;
+const _cameraExe = 'camnexo_vcam.exe'; // Windows only: on Linux the receiver writes to the virtual camera itself
 const _prefsKey = 'camnexo.desktop.v2';
 
 /// Runs the two helper programs (receiver and virtual camera), and turns their output
@@ -71,7 +72,8 @@ class DesktopController extends ChangeNotifier {
 
   bool _disposed = false;
 
-  String get registerCommand => '& "${helperDir ?? '<folder>'}\\$_cameraExe" register';
+  String get registerCommand =>
+      Platform.isLinux ? linuxCameraCommand : '& "${helperDir ?? '<folder>'}\\$_cameraExe" register';
 
   // ------------------------------------------------------------------ cameras
 
@@ -97,7 +99,7 @@ class DesktopController extends ChangeNotifier {
   String? effectsDownloadError;
 
   /// The receiver is running but has no effects files yet: offer the download.
-  bool get fxNeedsDownload => !fxAvailable && receiverListening && fxMessage == 'not installed';
+  bool get fxNeedsDownload => !fxAvailable && receiverListening && fxMessage == 'not installed' && EffectsPack.supported;
 
   /// Downloads the effects pack, then tells the receiver to load it. Background effects chosen before
   /// the download apply as soon as it is done.
@@ -453,11 +455,17 @@ class DesktopController extends ChangeNotifier {
     if (File('${beside.path}${Platform.pathSeparator}$_receiverExe').existsSync()) {
       return beside.path;
     }
+    if (Platform.isLinux) {
+      // Installed by the .deb package.
+      const installed = '/usr/lib/camnexo';
+      if (File('$installed/$_receiverExe').existsSync()) return installed;
+    }
     Directory? dir = exeDir;
     for (var i = 0; i < 12 && dir != null; i++) {
-      final candidate = Directory(
-          '${dir.path}${Platform.pathSeparator}native${Platform.pathSeparator}windows'
-          '${Platform.pathSeparator}vcam${Platform.pathSeparator}build${Platform.pathSeparator}Release');
+      final candidate = Directory(Platform.isLinux
+          ? '${dir.path}/native/linux/build'
+          : '${dir.path}${Platform.pathSeparator}native${Platform.pathSeparator}windows'
+              '${Platform.pathSeparator}vcam${Platform.pathSeparator}build${Platform.pathSeparator}Release');
       if (File('${candidate.path}${Platform.pathSeparator}$_receiverExe').existsSync()) {
         return candidate.path;
       }
@@ -481,14 +489,23 @@ class DesktopController extends ChangeNotifier {
   Future<void> start() async {
     helperDir = _findHelpers();
     if (helperDir == null) {
-      error = 'Helper programs not found. Build native/windows/vcam first.';
+      error = Platform.isLinux
+          ? 'Helper programs not found. Build native/linux first.'
+          : 'Helper programs not found. Build native/windows/vcam first.';
       notifyListeners();
       return;
     }
     _persist = true;
     await _load();
     await _startReceiver();
-    await _startCamera();
+    if (Platform.isLinux) {
+      // No separate camera process: the receiver writes to the v4l2loopback device itself and
+      // reports it with "[v4l2] ..." lines.
+      camera = CameraState.starting;
+      notifyListeners();
+    } else {
+      await _startCamera();
+    }
   }
 
   Future<void> _startReceiver() async {
@@ -497,7 +514,10 @@ class DesktopController extends ChangeNotifier {
       final simulate = int.tryParse(Platform.environment['CAMNEXO_SIMULATE'] ?? '') ?? 0;
       final p = await Process.start(
         '$helperDir${Platform.pathSeparator}$_receiverExe',
-        [if (simulate > 0) ...['--simulate', '$simulate']],
+        [
+          if (simulate > 0) ...['--simulate', '$simulate'],
+          if (Platform.isLinux) ...['--preview-socket', previewSocketPath()],
+        ],
       );
       _receiver = p;
       p.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_onReceiverLine);
@@ -556,6 +576,7 @@ class DesktopController extends ChangeNotifier {
   }
 
   Future<void> restartCamera() async {
+    if (Platform.isLinux) return; // the receiver looks for the camera again by itself every two seconds
     await _stopCamera();
     error = null;
     await _startCamera();
@@ -596,6 +617,14 @@ class DesktopController extends ChangeNotifier {
       if (fxLine != null) {
         fxAvailable = fxLine.group(1) == 'ready';
         fxMessage = fxLine.group(2);
+      } else if (line.startsWith('[v4l2] ready')) {
+        // Linux: the receiver opened the virtual camera.
+        camera = CameraState.ready;
+        error = null;
+      } else if (line.startsWith('[v4l2] no CamNexo camera')) {
+        camera = CameraState.setupRequired;
+      } else if (line.startsWith('[v4l2] lost')) {
+        camera = CameraState.starting;
       } else if (line.contains('receiver listening')) {
         receiverListening = true;
       } else if (mdns != null) {

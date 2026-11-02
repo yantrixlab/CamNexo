@@ -1,8 +1,8 @@
 #pragma once
-#include <windows.h>
-
 #include <cstdint>
 #include <vector>
+
+#include "platform.h"
 
 // One decoded picture: tightly packed NV12 (all Y rows, then the interleaved UV rows).
 struct Picture {

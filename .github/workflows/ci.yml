@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'linux-*']
   pull_request:
   workflow_dispatch:
 
@@ -83,3 +83,59 @@ jobs:
         with:
           name: camnexo-windows-installer
           path: installer/windows/output/*.exe
+
+  linux-receiver:
+    name: Linux receiver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libavcodec-dev libavutil-dev libavahi-client-dev
+      - name: Build the receiver
+        run: |
+          chmod +x tools/ci-run.sh
+          tools/ci-run.sh "Configure" cmake -S native/linux -B native/linux/build -DCMAKE_BUILD_TYPE=Release
+          tools/ci-run.sh "Build the receiver" cmake --build native/linux/build -j 4
+      - name: Run with test cameras
+        run: |
+          cd native/linux/build
+          timeout 8 ./camnexo_receiver --simulate 2 --no-discovery --no-v4l2 --port 7999 \
+            --snap /tmp/snap.bmp --preview-socket /tmp/camnexo-ci.sock > /tmp/receiver.log || true
+          cat /tmp/receiver.log
+          for want in "connected from simulated" "cap sizes=" "rx 30 fps in" "background effects unavailable (not installed)"; do
+            grep -q "$want" /tmp/receiver.log || { echo "::error title=Receiver log::missing line: $want"; exit 1; }
+          done
+          test -s /tmp/snap.bmp || { echo "::error title=Receiver::no picture was composed"; exit 1; }
+          ls -l /tmp/snap.bmp
+      - name: Effects (real model, from the downloadable pack)
+        run: |
+          native/linux/make-effects-pack.sh
+          mkdir -p "$HOME/.local/share/camnexo/effects"
+          tar -xzf native/linux/dist/CamNexo-Effects-linux-x64-1.tar.gz -C "$HOME/.local/share/camnexo/effects"
+          img="$PWD/brand/camnexo-logo.png"
+          cd native/linux/build
+          ./camnexo_receiver --fx-test "$img" /tmp/fx.bmp 1 | tee /tmp/fx.log
+          grep -q "background effects ready" /tmp/fx.log || { echo "::error title=Effects::the model did not load: $(grep '\[fx\]' /tmp/fx.log)"; exit 1; }
+          grep -q "^wrote " /tmp/fx.log || { echo "::error title=Effects::no picture was written"; exit 1; }
+      - name: Virtual camera (v4l2loopback), end to end
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y v4l2loopback-dkms v4l-utils "linux-headers-$(uname -r)"
+          sudo modprobe v4l2loopback devices=1 video_nr=10 card_label=CamNexo exclusive_caps=1
+          cat /sys/class/video4linux/video10/name
+          cd native/linux/build
+          (./camnexo_receiver --simulate 1 --no-discovery --port 7998 --preview-socket /tmp/camnexo-ci2.sock > /tmp/receiver2.log 2>&1 &)
+          sleep 5
+          cat /tmp/receiver2.log
+          v4l2-ctl -d /dev/video10 --get-fmt-video
+          v4l2-ctl -d /dev/video10 --stream-mmap --stream-count=3 --stream-to=/tmp/cam.raw
+          size=$(stat -c %s /tmp/cam.raw)
+          echo "captured $size bytes (3 frames of 1920x1080 YUYV are 12441600)"
+          test "$size" -eq 12441600 || { echo "::error title=Virtual camera::captured $size bytes, expected 12441600"; exit 1; }
+          pkill camnexo_receiver || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camnexo-linux-receiver
+          path: native/linux/build/camnexo_receiver

@@ -13,7 +13,7 @@
 struct EffectSettings {
     int mode = 0;             // 0 none, 1 blur the background, 2 replace the background
     int blur = 60;            // 0..100, how strong the blur is
-    std::wstring background;  // image file for mode 2
+    FxString background;      // image file for mode 2
     int brightness = 0;       // -100..100
     int contrast = 0;         // -100..100
     int saturation = 0;       // -100..100
@@ -25,13 +25,14 @@ struct EffectSettings {
 
 namespace fx {
 
-// Loads onnxruntime.dll and the person-matting model that sit next to the program (in `dir`).
-// Without them the picture is passed through untouched. On failure `why` says what is missing.
-bool Init(const std::wstring& dir, std::string* why);
+// Loads ONNX Runtime (onnxruntime.dll, or libonnxruntime.so on Linux) and the person-matting model
+// (models/modnet.onnx) from `dir`. Without them the picture is passed through untouched. On failure
+// `why` says what is missing.
+bool Init(const FxString& dir, std::string* why);
 bool Available();
 
 // Reads an image file (PNG, JPEG, BMP...) as top-down BGRA.
-bool LoadImageBgra(const std::wstring& path, int* w, int* h, std::vector<BYTE>* bgra);
+bool LoadImageBgra(const FxString& path, int* w, int* h, std::vector<BYTE>* bgra);
 
 // Applies the effects to one camera's pictures. One instance per camera; call Process from one thread.
 // The person mask is worked out on a helper thread of its own, so a slow moment in the model never
@@ -80,7 +81,7 @@ private:
     std::vector<float> _smooth;  // mask smoothed over time
 
     std::vector<BYTE> _bgY, _bgUv;  // the replacement picture at the current size
-    std::wstring _bgPath;
+    FxString _bgPath;
     uint32_t _bgW = 0, _bgH = 0;
     bool _bgOk = false;
     std::vector<BYTE> _rgb;

@@ -6,8 +6,12 @@
 
 #include "effects.h"
 
+#ifdef _WIN32
 #include <wincodec.h>
 #include <wrl/client.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -18,7 +22,14 @@
 
 #include "onnxruntime_c_api.h"
 
+#ifdef _WIN32
 using Microsoft::WRL::ComPtr;
+#else
+// Reads pictures on Linux (stb_image, public domain: third_party/stb).
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO_FAILURE_STRINGS
+#include "stb_image.h"
+#endif
 
 namespace fx {
 namespace {
@@ -96,17 +107,26 @@ struct Axis {
 
 }  // namespace
 
-bool Init(const std::wstring& dir, std::string* why) {
+bool Init(const FxString& dir, std::string* why) {
     if (g_ready) return true;
+    using GetBase = const OrtApiBase*(ORT_API_CALL*)();
+#ifdef _WIN32
     HMODULE dll = LoadLibraryExW((dir + L"\\onnxruntime.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!dll) {
         if (why) *why = "onnxruntime.dll was not found next to the receiver";
         return false;
     }
-    using GetBase = const OrtApiBase*(ORT_API_CALL*)();
     auto getBase = reinterpret_cast<GetBase>(GetProcAddress(dll, "OrtGetApiBase"));
+#else
+    void* dll = dlopen((dir + "/libonnxruntime.so").c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!dll) {
+        if (why) *why = std::string("libonnxruntime.so could not be loaded: ") + (dlerror() ? dlerror() : "");
+        return false;
+    }
+    auto getBase = reinterpret_cast<GetBase>(dlsym(dll, "OrtGetApiBase"));
+#endif
     if (!getBase) {
-        if (why) *why = "onnxruntime.dll has no OrtGetApiBase";
+        if (why) *why = "the ONNX Runtime library has no OrtGetApiBase";
         return false;
     }
     g_ort = getBase()->GetApi(ORT_API_VERSION);
@@ -120,7 +140,11 @@ bool Init(const std::wstring& dir, std::string* why) {
     g_ort->SetIntraOpNumThreads(opts, 3);
     g_ort->SetInterOpNumThreads(opts, 1);
     g_ort->SetSessionGraphOptimizationLevel(opts, ORT_ENABLE_ALL);
-    const std::wstring model = dir + L"\\models\\modnet.onnx";
+#ifdef _WIN32
+    const FxString model = dir + L"\\models\\modnet.onnx";
+#else
+    const FxString model = dir + "/models/modnet.onnx";
+#endif
     const bool created = Ok(g_ort->CreateSession(g_env, model.c_str(), opts, &g_session), why);
     g_ort->ReleaseSessionOptions(opts);
     if (!created) {
@@ -134,7 +158,29 @@ bool Init(const std::wstring& dir, std::string* why) {
 
 bool Available() { return g_ready; }
 
-bool LoadImageBgra(const std::wstring& path, int* w, int* h, std::vector<BYTE>* bgra) {
+#ifndef _WIN32
+bool LoadImageBgra(const FxString& path, int* w, int* h, std::vector<BYTE>* bgra) {
+    int iw = 0, ih = 0, comp = 0;
+    unsigned char* px = stbi_load(path.c_str(), &iw, &ih, &comp, 4);  // RGBA, top-down
+    if (!px) return false;
+    if (iw <= 0 || ih <= 0 || iw > 16384 || ih > 16384) {
+        stbi_image_free(px);
+        return false;
+    }
+    bgra->resize(static_cast<size_t>(iw) * ih * 4);
+    for (size_t i = 0; i < static_cast<size_t>(iw) * ih; ++i) {
+        (*bgra)[i * 4 + 0] = px[i * 4 + 2];
+        (*bgra)[i * 4 + 1] = px[i * 4 + 1];
+        (*bgra)[i * 4 + 2] = px[i * 4 + 0];
+        (*bgra)[i * 4 + 3] = px[i * 4 + 3];
+    }
+    stbi_image_free(px);
+    *w = iw;
+    *h = ih;
+    return true;
+}
+#else
+bool LoadImageBgra(const FxString& path, int* w, int* h, std::vector<BYTE>* bgra) {
     ComPtr<IWICImagingFactory> factory;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) return false;
     ComPtr<IWICBitmapDecoder> decoder;
@@ -153,6 +199,7 @@ bool LoadImageBgra(const std::wstring& path, int* w, int* h, std::vector<BYTE>* 
     *h = static_cast<int>(uh);
     return true;
 }
+#endif
 
 // ---------------------------------------------------------------------------- filters
 

@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'desktop_controller.dart';
 import 'effects_panel.dart';
 import 'layout_widgets.dart';
+import 'platform_info.dart';
 import 'preview_reader.dart';
 
 const _glass = glass;
@@ -633,9 +634,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 const Text('One-time setup needed',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 3),
-                const Text(
-                  'Open PowerShell as administrator, run this, then restart CamNexo:',
-                  style: TextStyle(fontSize: 11.5, color: Colors.white70),
+                Text(
+                  cameraSetupIntro,
+                  style: const TextStyle(fontSize: 11.5, color: Colors.white70),
                 ),
                 const SizedBox(height: 6),
                 SelectableText(c.registerCommand,
@@ -725,9 +726,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 _AddressChip(address: address),
               ],
               const Divider(height: 14, color: Color(0x1FFFFFFF)),
-              const Text(
-                'In Zoom, Meet, Teams or OBS, choose "CamNexo (Windows Virtual Camera)".',
-                style: TextStyle(fontSize: 11, color: Colors.white60, height: 1.3),
+              Text(
+                cameraChoiceHint,
+                style: const TextStyle(fontSize: 11, color: Colors.white60, height: 1.3),
               ),
               if (c.camera == CameraState.failed || c.camera == CameraState.stopped)
                 Align(

@@ -4,6 +4,8 @@ import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'platform_info.dart';
+
 // The receiver's small preview stream: 960x540 RGBA frames (the composed layout), about 15 per second. Same pipe as
 // \\.\pipe\camnexo-preview. Dart treats a leading "\\." as a network share and fails with
 // "network path not found", so use the equivalent \\?\ spelling.
@@ -60,7 +62,56 @@ Future<bool> _readFully(RandomAccessFile f, Uint8List buf) async {
   return true;
 }
 
+// Linux: the receiver offers the same frames (24-byte header, then RGBA) on a Unix socket.
+Future<void> _readSocketLoop(SendPort out) async {
+  const frameLen = 24 + _width * _height * 4;
+  final path = previewSocketPath();
+  for (;;) {
+    Socket? socket;
+    try {
+      socket = await Socket.connect(InternetAddress(path, type: InternetAddressType.unix), 0);
+    } catch (_) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      continue;
+    }
+    var buf = Uint8List(frameLen);
+    var filled = 0;
+    var valid = true;
+    try {
+      await for (final chunk in socket) {
+        var off = 0;
+        while (valid && off < chunk.length) {
+          final n = (frameLen - filled) < (chunk.length - off) ? frameLen - filled : chunk.length - off;
+          buf.setRange(filled, filled + n, chunk, off);
+          filled += n;
+          off += n;
+          if (filled == frameLen) {
+            final h = buf.buffer.asByteData();
+            if (h.getUint32(0, Endian.little) != _magic ||
+                h.getUint32(4, Endian.little) != _width ||
+                h.getUint32(8, Endian.little) != _height) {
+              valid = false;
+              break;
+            }
+            // A fresh buffer per frame: the pixels go to the UI isolate without another copy.
+            out.send(TransferableTypedData.fromList([Uint8List.sublistView(buf, 24)]));
+            buf = Uint8List(frameLen);
+            filled = 0;
+          }
+        }
+        if (!valid) break;
+      }
+    } catch (_) {
+      // the receiver went away; reconnect below
+    } finally {
+      socket.destroy();
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+  }
+}
+
 Future<void> _readLoop(SendPort out) async {
+  if (Platform.isLinux) return _readSocketLoop(out);
   final header = Uint8List(24);
   for (;;) {
     RandomAccessFile? f;
