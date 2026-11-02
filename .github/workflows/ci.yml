@@ -122,19 +122,8 @@ jobs:
       - name: Virtual camera (v4l2loopback), end to end
         continue-on-error: true
         run: |
-          sudo apt-get install -y v4l2loopback-dkms v4l-utils "linux-headers-$(uname -r)"
-          sudo modprobe v4l2loopback devices=1 video_nr=10 card_label=CamNexo exclusive_caps=1
-          cat /sys/class/video4linux/video10/name
-          cd native/linux/build
-          (./camnexo_receiver --simulate 1 --no-discovery --port 7998 --preview-socket /tmp/camnexo-ci2.sock > /tmp/receiver2.log 2>&1 &)
-          sleep 5
-          cat /tmp/receiver2.log
-          v4l2-ctl -d /dev/video10 --get-fmt-video
-          v4l2-ctl -d /dev/video10 --stream-mmap --stream-count=3 --stream-to=/tmp/cam.raw
-          size=$(stat -c %s /tmp/cam.raw)
-          echo "captured $size bytes (3 frames of 1920x1080 YUYV are 12441600)"
-          test "$size" -eq 12441600 || { echo "::error title=Virtual camera::captured $size bytes, expected 12441600"; exit 1; }
-          pkill camnexo_receiver || true
+          chmod +x tools/ci-v4l2-test.sh
+          tools/ci-run.sh "Virtual camera" tools/ci-v4l2-test.sh
       - uses: actions/upload-artifact@v4
         with:
           name: camnexo-linux-receiver
