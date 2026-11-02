@@ -18,7 +18,7 @@ endif()
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
-pkg_check_modules(AVAHI REQUIRED IMPORTED_TARGET avahi-client avahi-common)
+pkg_check_modules(AVAHI REQUIRED IMPORTED_TARGET avahi-client)
 
 set(SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../windows/vcam)
 
