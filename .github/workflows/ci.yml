@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, 'linux-*']
+    tags: ['linux-v*']
   pull_request:
   workflow_dispatch:
 
@@ -183,7 +184,11 @@ jobs:
         working-directory: apps/desktop
         run: ../../tools/ci-run.sh "flutter build linux" flutter build linux --release
       - name: Build the package
-        run: tools/ci-run.sh "build-deb" installer/linux/build-deb.sh 0.0.0-ci.${{ github.run_number }}
+        run: |
+          # A tag like linux-v0.1.0 builds version 0.1.0; any other build is a numbered test build.
+          ver="0.0.0-ci.${{ github.run_number }}"
+          case "$GITHUB_REF" in refs/tags/linux-v*) ver="${GITHUB_REF_NAME#linux-v}" ;; esac
+          tools/ci-run.sh "build-deb" installer/linux/build-deb.sh "$ver"
       - name: Install the package and check it
         run: |
           sudo apt-get install -y ./installer/linux/output/camnexo_*_amd64.deb
@@ -210,3 +215,28 @@ jobs:
         with:
           name: camnexo-deb
           path: installer/linux/output/*.deb
+
+  release-linux:
+    name: Publish the Linux package
+    # Only for a tag such as linux-v0.1.0, and only when every check above passed.
+    if: startsWith(github.ref, 'refs/tags/linux-v')
+    needs: [linux-package, linux-receiver, linux-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: camnexo-deb
+          path: dist
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum *.deb > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release create "$TAG" *.deb SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "CamNexo for Linux ${TAG#linux-v} (experimental)" \
+            --notes "Experimental Linux desktop app for Debian and Ubuntu (64-bit, Ubuntu 22.04 or newer). Built and checked by automated tests; not yet tested by hand on many systems. Install with: sudo apt install ./camnexo_${TAG#linux-v}_amd64.deb. Setup and troubleshooting: https://camnexo.yantrixlab.com/support.html#linux"
