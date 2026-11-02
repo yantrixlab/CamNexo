@@ -204,8 +204,7 @@ jobs:
           pgrep -f /opt/camnexo/helpers/camnexo_receiver > /dev/null || { echo "::error title=App::the app did not start its receiver. $(tail -c 1500 /tmp/app.log | tr '\n' ' ')"; exit 1; }
           sock=$(find /run/user /tmp -name "camnexo*preview*.sock" 2>/dev/null | head -1)
           echo "preview socket: ${sock:-none}; XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
-          test -n "$sock" || { echo "::error title=App::the receiver has no preview socket (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}). $(tail -c 1200 /tmp/app.log | tr "
-" " ")"; exit 1; }
+          test -n "$sock" || { echo "::error title=App::the receiver has no preview socket (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}). $(tail -c 1200 /tmp/app.log | tr '\n' ' ')"; exit 1; }
           pkill -f camnexo_desktop || true
       - uses: actions/upload-artifact@v4
         with:
